@@ -1,0 +1,598 @@
+# scripts/02_make_dirunc_dataset.py
+from __future__ import annotations
+
+import argparse
+import json
+import random
+import re
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+QUERY_TOKENS = " [WHO?] [WHAT?] [WHEN?] [WHERE?] [WHY?] [HOW?]"
+DIRS = ["who", "what", "when", "where", "why", "how"]
+
+SPLITS_DEFAULT = ["train", "dev", "test", "test_seen", "test_unseen"]
+
+# ---------- Utilities ----------
+
+def read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+def write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+def clip(x: int, lo: int, hi: int) -> int:
+    return max(lo, min(hi, x))
+
+def is_user_turn(turn: Dict[str, Any]) -> bool:
+    # SGD usually uses 'USER' for user and 'SYSTEM' for assistant
+    return turn.get("speaker", "").upper() == "USER"
+
+def normalize_text(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip()
+
+# ---------- Slot -> 5W1H mapping (heuristic v0) ----------
+
+WHO_KWS = [
+    "attendee", "contact", "recipient", "person", "customer", "client",
+    "doctor", "trainer", "agent", "name of person"
+]
+WHEN_KWS = [
+    "date", "time", "day", "week", "month", "year", "duration",
+    "start time", "end time", "arrive", "leave", "check in", "check out"
+]
+WHERE_KWS = [
+    "location", "address", "city", "place", "destination", "origin",
+    "airport", "station", "area", "neighborhood", "venue"
+]
+WHY_KWS = ["reason", "purpose", "because"]
+HOW_KWS = ["method", "mode", "transport", "payment", "delivery", "format", "via", "type", "option", "shared", "ride"]
+HOW_MANY_KWS = ["number", "count", "amount", "quantity", "seats", "riders", "guests", "party_size", "people"]
+HOW_MODE_KWS = ["shared", "private", "mode", "option"]
+
+def map_slot_to_dir(slot_name: str, slot_desc: str) -> str:
+    s = (slot_name + " " + slot_desc).lower()
+
+    # WHO first (avoid mapping *_name wrongly when description indicates person/contact)
+    if any(k in s for k in WHO_KWS):
+        return "who"
+    if any(k in s for k in WHEN_KWS):
+        return "when"
+    if any(k in s for k in WHERE_KWS):
+        return "where"
+    if any(k in s for k in WHY_KWS):
+        return "why"
+    if any(k in s for k in HOW_KWS):
+        return "how"
+    if any(k in s for k in HOW_MANY_KWS):
+        return "how"
+    if any(k in s for k in HOW_MODE_KWS):
+        return "how"
+
+    # fallback: treat as WHAT (covers item/service/event, etc.)
+    return "what"
+
+# ---------- Text perturbation (Level0/1) ----------
+
+PLACEHOLDER_BY_DIR = {
+    "who": "someone",
+    "what": "something",
+    "when": "sometime",
+    "where": "somewhere",
+    "why": "for some reason",
+    "how": "somehow",
+}
+
+def cleanup_deletion_artifacts(text: str) -> str:
+    # "in ." / "at ." / "to ." みたいな痕跡を除去
+    text = re.sub(r"\b(in|at|on|to|from|for|with)\s*\.", ".", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(in|at|on|to|from|for|with)\s*,", ",", text, flags=re.IGNORECASE)
+
+    # 二重スペースや " ,"/" ." を整える
+    text = re.sub(r"\s+([.,!?;:])", r"\1", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip()
+
+def replace_values_in_text(
+    text: str,
+    values: Sequence[str],
+    mode: str,                 # "delete" or "placeholder"
+    placeholder: Optional[str] = None,
+) -> str:
+    out = text
+    for v in values:
+        if not v:
+            continue
+        # case-insensitive replace; keep it simple for v0
+        pat = re.compile(re.escape(v), flags=re.IGNORECASE)
+        out = pat.sub("" if mode == "delete" else (placeholder or ""), out)
+    out = normalize_text(out)
+    out = cleanup_deletion_artifacts(out)
+    return out
+
+# ---------- SGD extraction ----------
+
+def find_dialogue_files(split_dir: Path) -> List[Path]:
+    # In SGD repo: dialogues_*.json or dialogue_*.json depending on packaging
+    files = sorted(split_dir.glob("dialogues_*.json"))
+    if not files:
+        files = sorted(split_dir.glob("dialogue_*.json"))
+    return files
+
+def extract_active_intents(frame: Dict[str, Any]) -> Optional[str]:
+    st = frame.get("state")
+    if not st:
+        return None
+    ai = st.get("active_intent")
+    if not ai or ai == "NONE":
+        return None
+    return ai
+
+def extract_slot_values(frame: Dict[str, Any]) -> Dict[str, List[str]]:
+    st = frame.get("state") or {}
+    sv = st.get("slot_values") or {}
+    # ensure list[str]
+    out: Dict[str, List[str]] = {}
+    for k, v in sv.items():
+        if isinstance(v, list):
+            out[k] = [str(x) for x in v]
+        else:
+            out[k] = [str(v)]
+    return out
+
+def collect_service_slots_in_turn(turn: Dict[str, Any], service: str) -> Dict[str, List[str]]:
+    vals: Dict[str, List[str]] = {}
+    for fr in turn.get("frames", []):
+        if fr.get("service") != service:
+            continue
+        sv = extract_slot_values(fr)
+        for k, vs in sv.items():
+            vals.setdefault(k, [])
+            vals[k].extend(vs)
+    # de-dup values
+    for k in list(vals.keys()):
+        vals[k] = list(dict.fromkeys(vals[k]))
+    return vals
+
+def collect_service_slots_in_window(
+    dialogue: Dict[str, Any],
+    turn_indices: List[int],
+    service: str,
+    include_assistant: bool,
+) -> Dict[str, List[str]]:
+    vals: Dict[str, List[str]] = {}
+    for i in turn_indices:
+        t = dialogue["turns"][i]
+        if (not include_assistant) and (not is_user_turn(t)):
+            continue
+        sv = collect_service_slots_in_turn(t, service)
+        for k, vs in sv.items():
+            vals.setdefault(k, [])
+            vals[k].extend(vs)
+    for k in list(vals.keys()):
+        vals[k] = list(dict.fromkeys(vals[k]))
+    return vals
+
+def get_prev_user_turn_index(dialogue: Dict[str, Any], t_idx: int) -> Optional[int]:
+    for j in range(t_idx - 1, -1, -1):
+        if is_user_turn(dialogue["turns"][j]):
+            return j
+    return None
+
+def get_last_k_user_turn_indices(dialogue: Dict[str, Any], t_idx: int, k: int) -> List[int]:
+    """Return indices of last k user turns ending at t_idx (which must be a user turn)."""
+    user_idxs = []
+    for j in range(t_idx, -1, -1):
+        if is_user_turn(dialogue["turns"][j]):
+            user_idxs.append(j)
+            if len(user_idxs) == k:
+                break
+    return list(reversed(user_idxs))
+
+def get_window_turn_indices(dialogue: Dict[str, Any], user_turn_indices: List[int]) -> List[int]:
+    """Include all turns between first and last user turn indices."""
+    if not user_turn_indices:
+        return []
+    a = user_turn_indices[0]
+    b = user_turn_indices[-1]
+    return list(range(a, b + 1))
+
+def render_context_text(dialogue: Dict[str, Any], window_turn_indices: List[int], phase: int) -> str:
+    """Phase1: user-only (two user utterances). Phase2: user+assistant with prefixes."""
+    turns = dialogue["turns"]
+    if phase == 1:
+        parts = []
+        for i in window_turn_indices:
+            if is_user_turn(turns[i]):
+                parts.append(turns[i]["utterance"])
+        return normalize_text("\n".join(parts))
+    else:
+        parts = []
+        for i in window_turn_indices:
+            spk = "User" if is_user_turn(turns[i]) else "Assistant"
+            parts.append(f"{spk}: {turns[i]['utterance']}")
+        return normalize_text("\n".join(parts))
+
+# ---------- Example generation ----------
+
+@dataclass
+class GenConfig:
+    phases: List[int]
+    levels: List[int]
+    k_values: List[int]  # for phase2
+    require_complete_before_drop: bool
+    seed: int
+    max_dialogues_per_split: Optional[int]
+    include_splits: List[str]
+    debug_dir_stats: bool
+    debug_topk: int
+
+def generate_examples_for_turn(
+    *,
+    dialogue: Dict[str, Any],
+    split: str,
+    dialogue_id: str,
+    turn_idx: int,
+    service: str,
+    intent: str,
+    required_slots: List[str],
+    slot_meta: Dict[str, Dict[str, Any]],
+    cfg: GenConfig,
+    rng: random.Random,
+) -> List[Dict[str, Any]]:
+    """
+    Generate synthetic missing-slot examples from a 'complete' context (if cfg.require_complete_before_drop).
+    Phase1: drop size = 1
+    Phase2: drop size = 1 and 2 (up to available)
+    """
+    out_rows: List[Dict[str, Any]] = []
+
+    # Determine user-turn windows for each phase
+    prev_u = get_prev_user_turn_index(dialogue, turn_idx)
+    phase1_user_idxs = [i for i in [prev_u, turn_idx] if i is not None]
+
+    phase2_user_idxs_by_k = {k: get_last_k_user_turn_indices(dialogue, turn_idx, k) for k in cfg.k_values}
+
+    for phase in cfg.phases:
+        for level in cfg.levels:
+            if phase == 1:
+                user_idxs = phase1_user_idxs
+                window_idxs = get_window_turn_indices(dialogue, user_idxs)
+                include_asst_for_slots = False  # Phase1: user only for slot fulfillment
+                drop_sizes = [1]
+                k_val = None
+
+                out_rows.extend(
+                    _gen_rows_one_setting(
+                        dialogue=dialogue,
+                        split=split,
+                        dialogue_id=dialogue_id,
+                        turn_idx=turn_idx,
+                        service=service,
+                        intent=intent,
+                        required_slots=required_slots,
+                        slot_meta=slot_meta,
+                        phase=phase,
+                        level=level,
+                        k_val=k_val,
+                        window_idxs=window_idxs,
+                        include_asst_for_slots=include_asst_for_slots,
+                        drop_sizes=drop_sizes,
+                        cfg=cfg,
+                        rng=rng,
+                    )
+                )
+            else:
+                for k_val in cfg.k_values:
+                    user_idxs = phase2_user_idxs_by_k[k_val]
+                    window_idxs = get_window_turn_indices(dialogue, user_idxs)
+                    include_asst_for_slots = True  # Phase2: user + assistant for slot fulfillment
+                    drop_sizes = [1, 2]
+
+                    out_rows.extend(
+                        _gen_rows_one_setting(
+                            dialogue=dialogue,
+                            split=split,
+                            dialogue_id=dialogue_id,
+                            turn_idx=turn_idx,
+                            service=service,
+                            intent=intent,
+                            required_slots=required_slots,
+                            slot_meta=slot_meta,
+                            phase=phase,
+                            level=level,
+                            k_val=k_val,
+                            window_idxs=window_idxs,
+                            include_asst_for_slots=include_asst_for_slots,
+                            drop_sizes=drop_sizes,
+                            cfg=cfg,
+                            rng=rng,
+                        )
+                    )
+
+    return out_rows
+
+def _gen_rows_one_setting(
+    *,
+    dialogue: Dict[str, Any],
+    split: str,
+    dialogue_id: str,
+    turn_idx: int,
+    service: str,
+    intent: str,
+    required_slots: List[str],
+    slot_meta: Dict[str, Dict[str, Any]],
+    phase: int,
+    level: int,
+    k_val: Optional[int],
+    window_idxs: List[int],
+    include_asst_for_slots: bool,
+    drop_sizes: List[int],
+    cfg: GenConfig,
+    rng: random.Random,
+) -> List[Dict[str, Any]]:
+    # full context text
+    base_text = render_context_text(dialogue, window_idxs, phase=phase)
+
+    # slot values observed in the window (service-specific)
+    slot_values = collect_service_slots_in_window(
+        dialogue, window_idxs, service, include_assistant=include_asst_for_slots
+    )
+    observed_slots = set(slot_values.keys())
+    required_set = set(required_slots)
+
+    # If require "complete before drop", ensure all required are present
+    if cfg.require_complete_before_drop and not required_set.issubset(observed_slots):
+        return []
+
+    # Candidate slots we can drop: only those required and present
+    droppable = sorted(list(required_set.intersection(observed_slots)))
+    if not droppable:
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    for drop_n in drop_sizes:
+        if len(droppable) < drop_n:
+            continue
+
+        # For v0: sample 1 combination per drop_n (cheap). You can increase later.
+        drop_slots = rng.sample(droppable, drop_n)
+
+        # Create perturbed text by removing/replacing values of dropped slots
+        perturbed_text = base_text
+        missing_dirs = set()
+
+        for sl in drop_slots:
+            vals = slot_values.get(sl, [])
+            meta = slot_meta.get(f"{service}::{sl}", {})
+            desc = str(meta.get("description", "") or "")
+            d = map_slot_to_dir(sl, desc)
+            missing_dirs.add(d)
+
+            if level == 0:
+                perturbed_text = replace_values_in_text(perturbed_text, vals, mode="delete")
+            elif level == 1:
+                ph = PLACEHOLDER_BY_DIR[d]
+                perturbed_text = replace_values_in_text(perturbed_text, vals, mode="placeholder", placeholder=ph)
+            else:
+                raise ValueError(f"Unsupported level: {level}")
+
+        perturbed_text = normalize_text(perturbed_text) + QUERY_TOKENS
+
+        labels = {d: (1 if d in missing_dirs else 0) for d in DIRS}
+        uid = f"{split}::{dialogue_id}::t{turn_idx}::{service}::{intent}::p{phase}::l{level}::k{k_val or 0}::drop{drop_n}"
+
+        rows.append(
+            {
+                "id": uid,
+                "split": split,
+                "dialogue_id": dialogue_id,
+                "turn_idx": turn_idx,
+                "service": service,
+                "intent": intent,
+                "phase": phase,
+                "level": level,
+                "k": k_val,
+                "text": perturbed_text,
+                "labels": labels,          # dict form
+                "label_order": DIRS,       # fixed order
+                "missing_slots": drop_slots,
+                "missing_dirs": sorted(list(missing_dirs)),
+                "required_slots": sorted(list(required_set)),
+                "observed_slots_full": sorted(list(observed_slots)),  # before drop
+            }
+        )
+
+    return rows
+
+# ---------- Debug helpers ----------
+
+def slot_dir(service: str, slot: str, slot_meta: Dict[str, Dict[str, Any]]) -> str:
+    meta = slot_meta.get(f"{service}::{slot}", {})
+    desc = str(meta.get("description", "") or "")
+    return map_slot_to_dir(slot, desc)
+
+def print_dir_distribution(title: str, ctr: Counter, denom: Optional[int] = None) -> None:
+    denom = denom if denom is not None else (sum(ctr.values()) or 1)
+    print(title)
+    for d in DIRS:
+        c = int(ctr.get(d, 0))
+        pct = c / denom * 100.0
+        print(f"  {d:>5}: {c:>10}  ({pct:6.2f}%)")
+
+def print_top(title: str, ctr: Counter, topk: int) -> None:
+    print(title)
+    for k, c in ctr.most_common(topk):
+        print(f"  {str(k):>25} : {c}")
+
+# ---------- Main pipeline ----------
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sgd_root", type=str, default="data/raw/sgd")
+    ap.add_argument("--required_map", type=str, default="data/processed/sgd/required_slots_by_service_intent.json")
+    ap.add_argument("--slot_meta", type=str, default="data/processed/sgd/slot_meta_by_service_slot.json")
+    ap.add_argument("--out_dir", type=str, default="data/processed/sgd/dirunc")
+    ap.add_argument("--splits", type=str, default=",".join(SPLITS_DEFAULT))
+    ap.add_argument("--phases", type=str, default="1,2")
+    ap.add_argument("--levels", type=str, default="0,1")
+    ap.add_argument("--k_values", type=str, default="3,5")  # Phase2
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--max_dialogues_per_split", type=int, default=0, help="0 means no limit")
+    ap.add_argument(
+        "--allow_incomplete_context",
+        action="store_true",
+        help="If set, also generate drops even when required slots are not fully present originally (not recommended for v0)."
+    )
+    ap.add_argument("--debug_dir_stats", action="store_true", help="Enable debug prints for dir distributions.")
+    ap.add_argument("--debug_topk", type=int, default=30, help="TopK slots to print in debug.")
+    args = ap.parse_args()
+
+    sgd_root = Path(args.sgd_root)
+    out_dir = Path(args.out_dir)
+
+    required_map: Dict[str, Dict[str, List[str]]] = read_json(Path(args.required_map))
+    slot_meta: Dict[str, Dict[str, Any]] = read_json(Path(args.slot_meta))
+
+    splits = [s.strip() for s in args.splits.split(",") if s.strip()]
+    phases = [int(x) for x in args.phases.split(",") if x.strip()]
+    levels = [int(x) for x in args.levels.split(",") if x.strip()]
+    k_values = [int(x) for x in args.k_values.split(",") if x.strip()]
+    max_d = args.max_dialogues_per_split if args.max_dialogues_per_split > 0 else None
+
+    cfg = GenConfig(
+        phases=phases,
+        levels=levels,
+        k_values=k_values,
+        require_complete_before_drop=(not args.allow_incomplete_context),
+        seed=args.seed,
+        max_dialogues_per_split=max_d,
+        include_splits=splits,
+        debug_dir_stats=args.debug_dir_stats,
+        debug_topk=args.debug_topk,
+    )
+    rng = random.Random(cfg.seed)
+
+    for split in cfg.include_splits:
+        split_dir = sgd_root / split
+        if not split_dir.exists():
+            print(f"[skip] split not found: {split_dir}")
+            continue
+
+        files = find_dialogue_files(split_dir)
+        if not files:
+            print(f"[skip] no dialogue files in {split_dir}")
+            continue
+
+        rows_all: List[Dict[str, Any]] = []
+        n_dialogues = 0
+
+        # ---- debug counters (per split) ----
+        req_dir_ctr = Counter()
+        drop_dir_ctr = Counter()
+        req_slot_ctr = Counter()
+        drop_slot_ctr = Counter()
+
+        # Optional: track phase/level distributions of dropped dirs
+        drop_dir_by_setting: Dict[str, Counter] = {}
+
+        for fp in files:
+            dialogues = read_json(fp)
+            for d in dialogues:
+                n_dialogues += 1
+                if cfg.max_dialogues_per_split and n_dialogues > cfg.max_dialogues_per_split:
+                    break
+
+                dialogue_id = str(d.get("dialogue_id", f"{fp.stem}::{n_dialogues}"))
+                turns = d["turns"]
+
+                for t_idx, turn in enumerate(turns):
+                    # We anchor examples on USER turns (current user turn)
+                    if not is_user_turn(turn):
+                        continue
+
+                    # For each frame with active_intent, generate one example per (service,intent)
+                    for fr in turn.get("frames", []):
+                        service = fr.get("service")
+                        intent = extract_active_intents(fr)
+                        if not service or not intent:
+                            continue
+
+                        key = f"{service}::{intent}"
+                        if key not in required_map:
+                            continue
+                        required_slots = required_map[key]["required_slots"]
+                        if not required_slots:
+                            continue
+
+                        # ---- debug: required distribution (upper stream) ----
+                        if cfg.debug_dir_stats:
+                            for sl in required_slots:
+                                req_slot_ctr[sl] += 1
+                                ddir = slot_dir(service, sl, slot_meta)
+                                req_dir_ctr[ddir] += 1
+
+                        rows = generate_examples_for_turn(
+                            dialogue=d,
+                            split=split,
+                            dialogue_id=dialogue_id,
+                            turn_idx=t_idx,
+                            service=service,
+                            intent=intent,
+                            required_slots=required_slots,
+                            slot_meta=slot_meta,
+                            cfg=cfg,
+                            rng=rng,
+                        )
+
+                        # ---- debug: dropped distribution (down stream) ----
+                        if cfg.debug_dir_stats:
+                            for rr in rows:
+                                for sl in rr.get("missing_slots", []):
+                                    drop_slot_ctr[sl] += 1
+                                # dirs
+                                for ddir in rr.get("missing_dirs", []):
+                                    drop_dir_ctr[ddir] += 1
+                                # by setting
+                                st_key = f"p{rr.get('phase')}/l{rr.get('level')}/k{rr.get('k') or 0}"
+                                if st_key not in drop_dir_by_setting:
+                                    drop_dir_by_setting[st_key] = Counter()
+                                for ddir in rr.get("missing_dirs", []):
+                                    drop_dir_by_setting[st_key][ddir] += 1
+
+                        rows_all.extend(rows)
+
+            if cfg.max_dialogues_per_split and n_dialogues >= cfg.max_dialogues_per_split:
+                break
+
+        out_path = out_dir / f"{split}.jsonl"
+        write_jsonl(out_path, rows_all)
+
+        print(f"[done] split={split} dialogues={n_dialogues} examples={len(rows_all)} -> {out_path}")
+
+        # ---- print debug summary ----
+        if cfg.debug_dir_stats:
+            print("\n========== DEBUG DIR STATS ==========")
+            print(f"split={split}  dialogues={n_dialogues}  examples={len(rows_all)}")
+            print_dir_distribution("[debug] required slot dir distribution (upper stream):", req_dir_ctr)
+            print_dir_distribution("[debug] dropped slot dir distribution (down stream):", drop_dir_ctr)
+
+            print("\n[debug] dropped dir distribution by (phase/level/k):")
+            for st_key in sorted(drop_dir_by_setting.keys()):
+                ctr = drop_dir_by_setting[st_key]
+                denom = sum(ctr.values()) or 1
+                print_dir_distribution(f"  - {st_key}:", ctr, denom=denom)
+
+            print()
+            print_top("[debug] top required_slots (by frequency in required_map hits):", req_slot_ctr, cfg.debug_topk)
+            print()
+            print_top("[debug] top dropped_slots (actually dropped):", drop_slot_ctr, cfg.debug_topk)
+            print("=====================================\n")
+
+if __name__ == "__main__":
+    main()

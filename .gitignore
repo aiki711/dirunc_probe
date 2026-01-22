@@ -1,0 +1,8 @@
+dirunc_probe/
+data/
+log/
+runs/
+__pycache__/
+*.pyc
+.DS_Store
+configs/
