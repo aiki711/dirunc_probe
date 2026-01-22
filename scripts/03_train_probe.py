@@ -204,29 +204,65 @@ def find_subsequence(hay: List[int], needle: List[int]) -> Optional[Tuple[int, i
             return (start, start + len(needle))
     return None
 
+    # ---- NEW: make query tokens single special tokens ----
+    # For LLMs, we usually need left padding
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token else tokenizer.unk_token
+        
+    added = tokenizer.add_special_tokens({"additional_special_tokens": SPECIAL_TOKENS})
+    special_token_ids = [tokenizer.convert_tokens_to_ids(t) for t in SPECIAL_TOKENS]
+    
+    # Resize model embeddings if needed happens inside ProbeModelBase now
+    
+    # ... (dataset prep code omitted, assumes same) ...
+
+    # When creating ProbeModelBase, pass torch_dtype if available
+    # We'll modify ProbeModelBase to handle loading arguments better
+    
+    base = ProbeModelBase(
+        model_name,
+        vocab_size=len(tokenizer),
+        train_token_ids=special_token_ids,
+    ).to(device)
+
+    # ...
+    
 class ProbeModelBase(nn.Module):
     """Shared: frozen LM + output_hidden_states. Optionally train only special-token embeddings."""
     def __init__(self, model_name: str, *, vocab_size: Optional[int] = None, train_token_ids: Optional[List[int]] = None) -> None:
         super().__init__()
-        self.lm = AutoModel.from_pretrained(model_name, output_hidden_states=True)
+        # Use bfloat16 or float16 for LLMs to save memory if CUDA available
+        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        try:
+            self.lm = AutoModel.from_pretrained(
+                model_name, 
+                output_hidden_states=True, 
+                torch_dtype=dtype,
+                trust_remote_code=True
+            )
+        except OSError:
+             # Fallback or strict fail
+             self.lm = AutoModel.from_pretrained(model_name, output_hidden_states=True)
+        
+        # Ensure model is in expected dtype
+        self.output_dtype = dtype
 
-        # ---- NEW: resize for added special tokens ----
         if vocab_size is not None:
             cur = self.lm.get_input_embeddings().weight.size(0)
-            if vocab_size != cur:
+            if vocab_size > cur:
                 self.lm.resize_token_embeddings(vocab_size)
 
         # freeze everything
         for p in self.lm.parameters():
             p.requires_grad = False
 
-        # ---- NEW: optionally allow grads only for specific token rows in embedding ----
         self.train_token_ids: List[int] = train_token_ids or []
         if self.train_token_ids:
-            emb = self.lm.get_input_embeddings()  # nn.Embedding
+            emb = self.lm.get_input_embeddings()
             emb.weight.requires_grad = True
-
-            # grad mask: update only selected rows
+            
+            # grad mask logic from before
             mask = torch.zeros_like(emb.weight, dtype=torch.float32)
             for tid in self.train_token_ids:
                 if 0 <= tid < mask.size(0):
@@ -234,7 +270,7 @@ class ProbeModelBase(nn.Module):
             self.register_buffer("_emb_grad_mask", mask)
 
             def _hook(grad: torch.Tensor) -> torch.Tensor:
-                return grad * self._emb_grad_mask
+                return grad * self._emb_grad_mask.to(dtype=grad.dtype)
 
             emb.weight.register_hook(_hook)
 
@@ -242,16 +278,31 @@ class ProbeModelBase(nn.Module):
         self.num_layers = int(self.lm.config.num_hidden_layers)
 
     def get_layer_hidden(self, hidden_states: Tuple[torch.Tensor, ...], layer_idx: int) -> torch.Tensor:
-        if layer_idx < 0 or layer_idx >= self.num_layers:
-            raise ValueError(f"layer_idx out of range: {layer_idx} for num_layers={self.num_layers}")
-        return hidden_states[layer_idx + 1]
+        # Decoder models (like Llama) output tuple of hidden states.
+        # usually index 0 is embedding, last is final.
+        # But 'hidden_states' tuple length = num_layers + 1 (embeddings).
+        
+        # Robust layer indexing handling negative index
+        if layer_idx < 0:
+            # -1 means last layer
+            idx = len(hidden_states) + layer_idx
+        else:
+            # +1 because 0 is embeddings
+            idx = layer_idx + 1
+            
+        if idx < 0 or idx >= len(hidden_states):
+             # Fallback to last
+             idx = -1
+             
+        return hidden_states[idx]
 
 class EosPoolingProbe(nn.Module):
     """Baseline: EOS pooling (last non-pad token) + linear head."""
     def __init__(self, base: ProbeModelBase) -> None:
         super().__init__()
         self.base = base
-        self.head = nn.Linear(base.hidden_size, len(DIRS))
+        # Match head dtype to base model
+        self.head = nn.Linear(base.hidden_size, len(DIRS)).to(dtype=getattr(base, "output_dtype", torch.float32))
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, layer_idx: int) -> torch.Tensor:
         out = self.base.lm(input_ids=input_ids, attention_mask=attention_mask)
@@ -265,28 +316,22 @@ class EosPoolingProbe(nn.Module):
 
 class QueryTokenProbe(nn.Module):
     """
-    Proposed: Query-token 방식
-    - 入力末尾に [WHO?] ... を文字列で付与済みとする
-    - 各Query-tokenに対応するトークン列 span を探し、その hidden の平均（B案）を使う
-    - 方向ごとの重み W(6,H), b(6) でスコア化
+    Proposed: Query-token Approach (Left-Padding Compatible)
     """
     def __init__(self, base: ProbeModelBase, tokenizer: Any) -> None:
         super().__init__()
         self.base = base
         self.tokenizer = tokenizer
 
-        # ---- NEW: each label is a single special token id ----
-        self.token_id: Dict[str, int] = {
-            d: int(tokenizer.convert_tokens_to_ids(QUERY_LABEL_STR[d]))
-            for d in DIRS
-        }
         # safety
         for d, tid in self.token_id.items():
             if tid < 0:
                 raise ValueError(f"Special token id not found for {d}: {QUERY_LABEL_STR[d]}")
 
-        self.W = nn.Parameter(torch.empty(len(DIRS), base.hidden_size))
-        self.b = nn.Parameter(torch.zeros(len(DIRS)))
+        target_dtype = getattr(base, "output_dtype", torch.float32)
+
+        self.W = nn.Parameter(torch.empty(len(DIRS), base.hidden_size, dtype=target_dtype))
+        self.b = nn.Parameter(torch.zeros(len(DIRS), dtype=target_dtype))
         nn.init.normal_(self.W, mean=0.0, std=0.02)
 
         self.last_span_found: Optional[Dict[str, Any]] = None
@@ -301,31 +346,45 @@ class QueryTokenProbe(nn.Module):
         n_samples = int(input_ids.size(0))
 
         logits_list = []
-        # Iterate batch to locate spans (simple & robust; optimize later if needed)
-        for bi in range(input_ids.size(0)):
-            ids = input_ids[bi].tolist()
-            # Use attention_mask to cut padding tail
-            valid_len = int(attention_mask[bi].sum().item())
-            ids = ids[:valid_len]
-            h = hs[bi, :valid_len, :]  # (Tv, H)
-
+        
+        # Iterate batch
+        for bi in range(n_samples):
+            # Extract valid tokens based on attention_mask (handle Left or Right padding)
+            # attention_mask is 1 for valid, 0 for pad.
+            mask = attention_mask[bi] # (T,)
+            valid_indices = torch.nonzero(mask).squeeze(-1) # Indices where mask is 1
+            
+            # If no valid tokens (edge case?), skip
+            if valid_indices.numel() == 0:
+                 logits_list.append(torch.zeros(len(DIRS), device=input_ids.device))
+                 continue
+                 
+            # Extract valid sequence
+            ids_vec = input_ids[bi, valid_indices] # (Tv,)
+            h_vec = hs[bi, valid_indices, :]       # (Tv, H)
+            
+            ids_list = ids_vec.tolist()
+            
             dir_vecs = []
             sample_all_found = True
+            
             for d in DIRS:
                 total_counts[d] += 1
                 tid = self.token_id[d]
-                # last occurrence from the end
+                
+                # Search from end of valid sequence
                 pos = None
-                for j in range(len(ids) - 1, -1, -1):
-                    if ids[j] == tid:
+                for j in range(len(ids_list) - 1, -1, -1):
+                    if ids_list[j] == tid:
                         pos = j
                         break
                 
                 if pos is None:
                     sample_all_found = False
-                    vec = h[-1]
+                    # Fallback: use last token of valid sequence
+                    vec = h_vec[-1]
                 else:
-                    vec = h[pos]         # ★1トークンの hidden を使う
+                    vec = h_vec[pos]
                     found_counts[d] += 1
                 dir_vecs.append(vec)
 
@@ -333,18 +392,15 @@ class QueryTokenProbe(nn.Module):
                 all_found += 1
 
             H = torch.stack(dir_vecs, dim=0)  # (6, H)
-            # logits(d) = dot(W[d], H[d]) + b[d]
-            logit = (H * self.W).sum(dim=1) + self.b  # (6,)
+            logit = (H * self.W).sum(dim=1) + self.b
             logits_list.append(logit)
 
-        logits = torch.stack(logits_list, dim=0)  # (B, 6)
+        logits = torch.stack(logits_list, dim=0)
         
-        # store stats for this forward call (json-serializable)
         self.last_span_found = {
             "found": {d: int(found_counts[d]) for d in DIRS},
             "total": {d: int(total_counts[d]) for d in DIRS},
             "rates": {d: (float(found_counts[d]) / float(total_counts[d]) if total_counts[d] else 0.0) for d in DIRS},
-            "overall_rate": float(sum(found_counts.values())) / float(sum(total_counts.values()) or 1),
             "all_found": int(all_found),
             "n_samples": int(n_samples),
         }
@@ -470,7 +526,8 @@ def train_one_layer(
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     tokenizer.truncation_side = "left"
-    tokenizer.padding_side = "right" 
+    # For LLMs (Decoder), Left Padding is critical
+    tokenizer.padding_side = "left"  
 
     # ---- NEW: make query tokens single special tokens ----
     added = tokenizer.add_special_tokens({"additional_special_tokens": SPECIAL_TOKENS})
@@ -599,6 +656,12 @@ def train_one_layer(
         # save per-epoch log
         with (out_dir / "log.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        
+        # Print progress for logging
+        print(f"[Epoch {ep}/{epochs}] mode={mode} layer={layer_idx} | "
+              f"train_loss={train_loss:.4f} | "
+              f"macro_f1_posonly={dev_metrics.get('macro_f1_posonly',0.0):.4f} | "
+              f"micro_f1={dev_metrics.get('micro_f1',0.0):.4f}")
 
         # ====== NEW: best 更新基準を「チューニング後macro_f1」に ======
         # もし micro で選びたければ dev_metrics["micro_f1"] に変えてください

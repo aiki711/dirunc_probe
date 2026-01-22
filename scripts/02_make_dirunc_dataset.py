@@ -231,6 +231,7 @@ class GenConfig:
     include_splits: List[str]
     debug_dir_stats: bool
     debug_topk: int
+    contrastive: bool = False
 
 def generate_examples_for_turn(
     *,
@@ -246,74 +247,150 @@ def generate_examples_for_turn(
     rng: random.Random,
 ) -> List[Dict[str, Any]]:
     """
-    Generate synthetic missing-slot examples from a 'complete' context (if cfg.require_complete_before_drop).
-    Phase1: drop size = 1
-    Phase2: drop size = 1 and 2 (up to available)
+    Generate synthetic missing-slot examples.
+    If cfg.contrastive is True:
+        Generate (Resolved, Unresolved) pairs based on context manipulation.
+        Target turn is always perturbed (Level 1 typically).
+    Else:
+        Legacy generation based on phases/levels/k_values.
     """
     out_rows: List[Dict[str, Any]] = []
-
-    # Determine user-turn windows for each phase
+    
+    # Pre-calculate simple user windows for potential use
     prev_u = get_prev_user_turn_index(dialogue, turn_idx)
     phase1_user_idxs = [i for i in [prev_u, turn_idx] if i is not None]
-
     phase2_user_idxs_by_k = {k: get_last_k_user_turn_indices(dialogue, turn_idx, k) for k in cfg.k_values}
 
-    for phase in cfg.phases:
-        for level in cfg.levels:
-            if phase == 1:
-                user_idxs = phase1_user_idxs
-                window_idxs = get_window_turn_indices(dialogue, user_idxs)
-                include_asst_for_slots = False  # Phase1: user only for slot fulfillment
-                drop_sizes = [1]
-                k_val = None
+    if cfg.contrastive:
+        # Contrastive Mode (Force Phase 2, Level 1 logic mostly)
+        # Use simple strategy: Focus on Phase 2 context with max k
+        
+        target_k = max(cfg.k_values) if cfg.k_values else 5
+        user_idxs = get_last_k_user_turn_indices(dialogue, turn_idx, target_k)
+        window_idxs = get_window_turn_indices(dialogue, user_idxs)
 
-                out_rows.extend(
-                    _gen_rows_one_setting(
-                        dialogue=dialogue,
-                        split=split,
-                        dialogue_id=dialogue_id,
-                        turn_idx=turn_idx,
-                        service=service,
-                        intent=intent,
-                        required_slots=required_slots,
-                        slot_meta=slot_meta,
-                        phase=phase,
-                        level=level,
-                        k_val=k_val,
-                        window_idxs=window_idxs,
-                        include_asst_for_slots=include_asst_for_slots,
-                        drop_sizes=drop_sizes,
-                        cfg=cfg,
-                        rng=rng,
-                    )
-                )
-            else:
-                for k_val in cfg.k_values:
-                    user_idxs = phase2_user_idxs_by_k[k_val]
+        # Collect slots in full window (assistant included)
+        slot_values = collect_service_slots_in_window(
+            dialogue, window_idxs, service, include_assistant=True
+        )
+        observed_slots = set(slot_values.keys())
+        required_set = set(required_slots)
+
+        # Candidates must be required AND observed derived from context
+        candidates = sorted(list(required_set.intersection(observed_slots)))
+        if not candidates:
+            return []
+
+        for sl in candidates:
+            vals = slot_values.get(sl, [])
+            meta = slot_meta.get(f"{service}::{sl}", {})
+            desc = str(meta.get("description", "") or "")
+            d = map_slot_to_dir(sl, desc)
+            placeholder = PLACEHOLDER_BY_DIR.get(d, "something")
+
+            # -- Target Turn Perturbation (Level 1) --
+            target_text_raw = dialogue["turns"][turn_idx]["utterance"]
+            target_text_mod = replace_values_in_text(target_text_raw, vals, mode="placeholder", placeholder=placeholder)
+            target_text_final = normalize_text(target_text_mod) + QUERY_TOKENS
+            
+            # -- Context Generation --
+            context_idxs = window_idxs[:-1] # exclude target
+            if not context_idxs:
+                continue
+
+            base_ctx_text = render_context_text(dialogue, context_idxs, phase=2)
+            
+            # Resolved (Positive): Keep values
+            ctx_resolved = cleanup_deletion_artifacts(base_ctx_text)
+
+            # Unresolved (Negative): Delete values
+            ctx_unresolved = replace_values_in_text(base_ctx_text, vals, mode="delete")
+
+            if ctx_resolved == ctx_unresolved:
+                continue
+
+            pair_id = f"{dialogue_id}::t{turn_idx}::{sl}"
+
+            # Labels logic
+            def make_labels(is_unresolved_tgt: bool):
+                lbls = {}
+                for req_sl in required_slots:
+                    req_d = map_slot_to_dir(req_sl, "")
+                    is_missing = False
+                    if req_sl not in observed_slots:
+                        is_missing = True # originally missing
+                    else:
+                        # If Unresolved Case and this is the target slot, force missing
+                        if is_unresolved_tgt and req_sl == sl:
+                            is_missing = True
+                    
+                    # Accumulate to direction (OR logic)
+                    prev = lbls.get(req_d, 0)
+                    lbls[req_d] = 1 if (is_missing or prev==1) else 0
+                
+                # Fill rest
+                for dd in DIRS:
+                    if dd not in lbls:
+                        lbls[dd] = 0
+                return lbls
+
+            labels_res = make_labels(is_unresolved_tgt=False)
+            labels_unr = make_labels(is_unresolved_tgt=True)
+
+            common = {
+                "split": split,
+                "dialogue_id": dialogue_id,
+                "turn_idx": turn_idx,
+                "service": service,
+                "intent": intent,
+                "phase": 2,
+                "level": 1, 
+                "k": target_k,
+                "target_slot": sl,
+                "target_dir": d,
+                "pair_id": pair_id,
+                "required_slots": sorted(list(required_set)),
+            }
+            
+            out_rows.append({
+                "id": pair_id + "::resolved",
+                "text": ctx_resolved + "\n" + target_text_final,
+                "labels": labels_res,
+                "condition": "resolved",
+                **common
+            })
+            out_rows.append({
+                "id": pair_id + "::unresolved",
+                "text": ctx_unresolved + "\n" + target_text_final,
+                "labels": labels_unr,
+                "condition": "unresolved",
+                **common
+            })
+
+    # Non-contrastive (Legacy) logic
+    else:
+        for phase in cfg.phases:
+            for level in cfg.levels:
+                if phase == 1:
+                    user_idxs = phase1_user_idxs
                     window_idxs = get_window_turn_indices(dialogue, user_idxs)
-                    include_asst_for_slots = True  # Phase2: user + assistant for slot fulfillment
-                    drop_sizes = [1, 2]
-
-                    out_rows.extend(
-                        _gen_rows_one_setting(
-                            dialogue=dialogue,
-                            split=split,
-                            dialogue_id=dialogue_id,
-                            turn_idx=turn_idx,
-                            service=service,
-                            intent=intent,
-                            required_slots=required_slots,
-                            slot_meta=slot_meta,
-                            phase=phase,
-                            level=level,
-                            k_val=k_val,
-                            window_idxs=window_idxs,
-                            include_asst_for_slots=include_asst_for_slots,
-                            drop_sizes=drop_sizes,
-                            cfg=cfg,
-                            rng=rng,
-                        )
-                    )
+                    include_asst_for_slots = False
+                    drop_sizes = [1]
+                    k_val = None
+                    out_rows.extend(_gen_rows_one_setting(dialogue=dialogue, split=split, dialogue_id=dialogue_id,
+                                    turn_idx=turn_idx, service=service, intent=intent, required_slots=required_slots,
+                                    slot_meta=slot_meta, phase=phase, level=level, k_val=k_val, window_idxs=window_idxs,
+                                    include_asst_for_slots=include_asst_for_slots, drop_sizes=drop_sizes, cfg=cfg, rng=rng))
+                else:
+                    for k_val in cfg.k_values:
+                        user_idxs = phase2_user_idxs_by_k[k_val]
+                        window_idxs = get_window_turn_indices(dialogue, user_idxs)
+                        include_asst_for_slots = True
+                        drop_sizes = [1, 2]
+                        out_rows.extend(_gen_rows_one_setting(dialogue=dialogue, split=split, dialogue_id=dialogue_id,
+                                    turn_idx=turn_idx, service=service, intent=intent, required_slots=required_slots,
+                                    slot_meta=slot_meta, phase=phase, level=level, k_val=k_val, window_idxs=window_idxs,
+                                    include_asst_for_slots=include_asst_for_slots, drop_sizes=drop_sizes, cfg=cfg, rng=rng))
 
     return out_rows
 
@@ -360,10 +437,7 @@ def _gen_rows_one_setting(
         if len(droppable) < drop_n:
             continue
 
-        # For v0: sample 1 combination per drop_n (cheap). You can increase later.
         drop_slots = rng.sample(droppable, drop_n)
-
-        # Create perturbed text by removing/replacing values of dropped slots
         perturbed_text = base_text
         missing_dirs = set()
 
@@ -377,7 +451,7 @@ def _gen_rows_one_setting(
             if level == 0:
                 perturbed_text = replace_values_in_text(perturbed_text, vals, mode="delete")
             elif level == 1:
-                ph = PLACEHOLDER_BY_DIR[d]
+                ph = PLACEHOLDER_BY_DIR.get(d, "something") # Safe get
                 perturbed_text = replace_values_in_text(perturbed_text, vals, mode="placeholder", placeholder=ph)
             else:
                 raise ValueError(f"Unsupported level: {level}")
@@ -451,6 +525,7 @@ def main() -> None:
     )
     ap.add_argument("--debug_dir_stats", action="store_true", help="Enable debug prints for dir distributions.")
     ap.add_argument("--debug_topk", type=int, default=30, help="TopK slots to print in debug.")
+    ap.add_argument("--contrastive", action="store_true", help="Enable contrastive pair generation (Level1-based).")
     args = ap.parse_args()
 
     sgd_root = Path(args.sgd_root)
@@ -475,6 +550,7 @@ def main() -> None:
         include_splits=splits,
         debug_dir_stats=args.debug_dir_stats,
         debug_topk=args.debug_topk,
+        contrastive=args.contrastive,
     )
     rng = random.Random(cfg.seed)
 
