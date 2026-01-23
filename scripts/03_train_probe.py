@@ -230,34 +230,46 @@ def find_subsequence(hay: List[int], needle: List[int]) -> Optional[Tuple[int, i
     
 class ProbeModelBase(nn.Module):
     """Shared: frozen LM + output_hidden_states. Optionally train only special-token embeddings."""
-    def __init__(self, model_name: str, *, vocab_size: Optional[int] = None, train_token_ids: Optional[List[int]] = None) -> None:
+    def __init__(self, model_name: str, *, 
+                 vocab_size: Optional[int] = None, 
+                 train_token_ids: Optional[List[int]] = None,
+                 pretrained_model: Optional[nn.Module] = None) -> None:
         super().__init__()
-        # Use bfloat16 or float16 for LLMs to save memory if CUDA available
-        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        try:
-            self.lm = AutoModel.from_pretrained(
-                model_name, 
-                output_hidden_states=True, 
-                torch_dtype=dtype,
-                trust_remote_code=True
-            )
-        except OSError:
-             # Fallback or strict fail
-             self.lm = AutoModel.from_pretrained(model_name, output_hidden_states=True)
         
+        if pretrained_model is not None:
+            self.lm = pretrained_model
+            # Assume the model is already on the correct device/dtype if strictly managed,
+            # but we can check or trust the caller.
+            # We assume vocab resizing is already done on the shared model if needed.
+        else:
+            # Use bfloat16 or float16 for LLMs to save memory if CUDA available
+            dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+            try:
+                self.lm = AutoModel.from_pretrained(
+                    model_name, 
+                    output_hidden_states=True, 
+                    torch_dtype=dtype,
+                    trust_remote_code=True
+                )
+            except OSError:
+                 # Fallback or strict fail
+                 self.lm = AutoModel.from_pretrained(model_name, output_hidden_states=True)
+            
+            if vocab_size is not None:
+                cur = self.lm.get_input_embeddings().weight.size(0)
+                if vocab_size > cur:
+                    self.lm.resize_token_embeddings(vocab_size)
+
         # Ensure model is in expected dtype
-        self.output_dtype = dtype
+        self.output_dtype = self.lm.dtype
 
-        if vocab_size is not None:
-            cur = self.lm.get_input_embeddings().weight.size(0)
-            if vocab_size > cur:
-                self.lm.resize_token_embeddings(vocab_size)
-
-        # freeze everything
+        # freeze everything (reset to frozen state)
         for p in self.lm.parameters():
             p.requires_grad = False
 
         self.train_token_ids: List[int] = train_token_ids or []
+        self.hook_handle = None
+
         if self.train_token_ids:
             emb = self.lm.get_input_embeddings()
             emb.weight.requires_grad = True
@@ -272,10 +284,22 @@ class ProbeModelBase(nn.Module):
             def _hook(grad: torch.Tensor) -> torch.Tensor:
                 return grad * self._emb_grad_mask.to(dtype=grad.dtype)
 
-            emb.weight.register_hook(_hook)
+            self.hook_handle = emb.weight.register_hook(_hook)
 
         self.hidden_size = int(self.lm.config.hidden_size)
         self.num_layers = int(self.lm.config.num_hidden_layers)
+
+    def teardown(self) -> None:
+        """Clean up hooks and reset grad status for shared model re-use."""
+        if self.hook_handle is not None:
+            self.hook_handle.remove()
+            self.hook_handle = None
+        
+        # Reset embeddings requires_grad to False to match 'frozen' baseline state
+        if hasattr(self, 'lm') and self.lm is not None:
+            emb = self.lm.get_input_embeddings()
+            if emb:
+                emb.weight.requires_grad = False
 
     def get_layer_hidden(self, hidden_states: Tuple[torch.Tensor, ...], layer_idx: int) -> torch.Tensor:
         # Decoder models (like Llama) output tuple of hidden states.
@@ -519,27 +543,19 @@ def train_one_layer(
     strip_query_in_baseline: bool,
     eval_services: Optional[List[str]],          
     no_tqdm: bool,                               
-    tqdm_mininterval: float,  
+    tqdm_mininterval: float,
+    shared_model: nn.Module,     # NEW
+    shared_tokenizer: Any,       # NEW
 ) -> Dict[str, Any]:
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    tokenizer.truncation_side = "left"
-    # For LLMs (Decoder), Left Padding is critical
-    tokenizer.padding_side = "left"  
+    # Use shared tokenizer
+    tokenizer = shared_tokenizer
 
-    # ---- NEW: make query tokens single special tokens ----
-    added = tokenizer.add_special_tokens({"additional_special_tokens": SPECIAL_TOKENS})
-    # added は 0 or 6 のはず（既に入ってれば0）
+    # Special tokens are already added in main, but we need the IDs here
     special_token_ids = [tokenizer.convert_tokens_to_ids(t) for t in SPECIAL_TOKENS]
-    assert all(isinstance(i, int) and i >= 0 for i in special_token_ids), special_token_ids
-
-
-    # Some models don't have pad token by default
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token else tokenizer.unk_token
-
+    
     # prepare datasets (optionally strip query for baseline)
     if mode == "baseline" and strip_query_in_baseline:
         train_rows2 = []
@@ -572,11 +588,16 @@ def train_one_layer(
         collate_fn=lambda b: collate_batch(tokenizer, b, max_length),
     )
 
+    # Instantiate Wrapper
+    # Pass shared_model
+    # Note: ProbeModelBase init will handle freezing and hooks
     base = ProbeModelBase(
         model_name,
-        vocab_size=len(tokenizer),
+        vocab_size=None, # Already handled in main
         train_token_ids=special_token_ids,
-    ).to(device)
+        pretrained_model=shared_model,
+    ).to(device) # model already on device, but .to checks internally
+
     if mode == "baseline":
         model = EosPoolingProbe(base).to(device)
     elif mode == "query":
@@ -697,6 +718,10 @@ def train_one_layer(
             m["n_rows"] = len(dev_ds_s)
             best["dev_by_service"][svc] = m
 
+    # CLEANUP here to reuse shared model cleanly
+    if 'base' in locals() and hasattr(base, 'teardown'):
+        base.teardown()
+
     return {"best": best, "best_path": str(best_path)}
 
 # ---------------- Main ----------------
@@ -780,12 +805,41 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     safe_mkdir(out_dir)
 
-    # determine layer candidates
-    # instantiate base once to know num_layers
-    tmp_base = ProbeModelBase(args.model_name)
-    num_layers = tmp_base.num_layers
-    del tmp_base
+    safe_mkdir(out_dir)
 
+    print(f"Loading model (shared): {args.model_name}")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=True)
+    tokenizer.truncation_side = "left"
+    tokenizer.padding_side = "left"
+    
+    # Add special tokens ONCE
+    added = tokenizer.add_special_tokens({"additional_special_tokens": SPECIAL_TOKENS})
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token else tokenizer.unk_token
+    
+    # Load model
+    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+    try:
+        shared_model = AutoModel.from_pretrained(
+            args.model_name, 
+            output_hidden_states=True, 
+            torch_dtype=dtype,
+            trust_remote_code=True
+        )
+    except OSError:
+        shared_model = AutoModel.from_pretrained(args.model_name, output_hidden_states=True)
+    
+    # Resize ONCE
+    shared_model.resize_token_embeddings(len(tokenizer))
+    shared_model.to(device)
+    shared_model.eval() # Start in eval mode
+
+    # Check layers
+    num_layers = int(shared_model.config.num_hidden_layers)
+    
     if args.layer != -1:
         layers = [args.layer]
     else:
@@ -848,6 +902,8 @@ def main() -> None:
                 eval_services=eval_services,
                 no_tqdm=args.no_tqdm,
                 tqdm_mininterval=args.tqdm_mininterval,
+                shared_model=shared_model,
+                shared_tokenizer=tokenizer,
             )
     
             key = f"{mode}/layer_{layer_idx}"
@@ -908,6 +964,8 @@ def main() -> None:
                     eval_services=eval_services,
                     no_tqdm=args.no_tqdm,
                     tqdm_mininterval=args.tqdm_mininterval,
+                    shared_model=shared_model,
+                    shared_tokenizer=tokenizer,
                 )
     
                 key = f"{mode}/layer_{layer_idx}"
