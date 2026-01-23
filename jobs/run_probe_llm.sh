@@ -8,6 +8,7 @@
 #PBS -j oe
 
 set -euo pipefail
+export PYTHONUNBUFFERED=1
 
 # Activate virtualenv if exists
 if [ -f dirunc_probe/bin/activate ]; then

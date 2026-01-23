@@ -618,10 +618,11 @@ def train_one_layer(
         n = 0
         span_acc_train = _init_span_acc()
 
-        for batch in tqdm(
+        total_batches = len(train_dl)
+        for i, batch in enumerate(tqdm(
             train_dl, 
             desc=f"train {mode} layer={layer_idx} ep={ep}", 
-            leave=False, disable=no_tqdm, mininterval=tqdm_mininterval):
+            leave=False, disable=no_tqdm, mininterval=tqdm_mininterval)):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             y = batch["y"].to(device)
@@ -636,6 +637,9 @@ def train_one_layer(
 
             total_loss += float(loss.item()) * y.size(0)
             n += y.size(0)
+
+            if no_tqdm and (i + 1) % 20000 == 0:
+                print(f"[Epoch {ep}] Step {i+1}/{total_batches} | Loss: {loss.item():.4f}", flush=True)
 
         train_loss = total_loss / max(1, n)
 
