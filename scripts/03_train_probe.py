@@ -243,7 +243,11 @@ class ProbeModelBase(nn.Module):
             # We assume vocab resizing is already done on the shared model if needed.
         else:
             # Use bfloat16 or float16 for LLMs to save memory if CUDA available
-            dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+            if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+                dtype = torch.bfloat16
+            else:
+                dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+
             try:
                 self.lm = AutoModel.from_pretrained(
                     model_name, 
@@ -633,13 +637,17 @@ def train_one_layer(
 
             optim.zero_grad(set_to_none=True)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optim.step()
 
             total_loss += float(loss.item()) * y.size(0)
             n += y.size(0)
 
             if no_tqdm and (i + 1) % 20000 == 0:
-                print(f"[Epoch {ep}] Step {i+1}/{total_batches} | Loss: {loss.item():.4f}", flush=True)
+                val = loss.item()
+                print(f"[Epoch {ep}] Step {i+1}/{total_batches} | Loss: {val:.4f}", flush=True)
+                if math.isnan(val):
+                     print(f"WARNING: Loss is NaN at step {i+1}", flush=True)
 
         train_loss = total_loss / max(1, n)
 
@@ -825,7 +833,11 @@ def main() -> None:
         tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token else tokenizer.unk_token
     
     # Load model
-    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+    if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        dtype = torch.bfloat16
+    else:
+        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+
     try:
         shared_model = AutoModel.from_pretrained(
             args.model_name, 
