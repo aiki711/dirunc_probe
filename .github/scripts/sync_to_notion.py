@@ -51,7 +51,7 @@ def generate_ai_summary(commits):
     prompt = f"以下はリポジトリ「{REPO_NAME}」の今週のコミット履歴である。簡潔に3項目程度の「だである調」で要約せよ。\n\n{commit_list}"
     
     # モデル名の候補
-    model_candidates = ['gemini-1.5-flash', 'gemini-2.0-flash']
+    model_candidates = ['gemini-2.5-flash-lite-preview-09-2025']
     
     for model_name in model_candidates:
         try:
