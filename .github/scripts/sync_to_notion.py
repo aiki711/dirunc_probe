@@ -1,6 +1,7 @@
 import os
 import requests
 import time
+import subprocess
 from datetime import datetime
 from google import genai
 
@@ -21,17 +22,22 @@ headers = {
 }
 
 def get_weekly_commits():
-    import subprocess
-    # コミットメッセージとハッシュを | で繋いで取得
-    cmd = ['git', 'log', '--since="1 week ago" --no-merges', '--pretty=format:%s|%h']
-    result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+    # コマンドを正確に分割してリストにする
+    cmd = [
+        'git', 'log', 
+        '--since=1 week ago', 
+        '--no-merges', 
+        '--pretty=format:%s|%h'
+    ]
+    # shell=False (デフォルト) で実行することで引数を確実に渡す
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    
     if not result.stdout.strip():
         return []
     
     commits = []
     for line in result.stdout.strip().split('\n'):
         if '|' in line:
-            # 右側から1回だけ分割することで、メッセージ内の | に影響されないようにする
             parts = line.rsplit('|', 1)
             if len(parts) == 2:
                 commits.append(parts)
@@ -44,10 +50,10 @@ def generate_ai_summary(commits):
     commit_list = "\n".join([f"- {msg}" for msg, _ in commits])
     prompt = f"以下はリポジトリ「{REPO_NAME}」の今週のコミット履歴である。簡潔に3項目程度の「だである調」で要約せよ。\n\n{commit_list}"
     
-    # 1.5-flashを優先（無料枠の制限が緩いため）
-    models = ['gemini-1.5-flash', 'gemini-2.0-flash']
+    # モデル名の候補
+    model_candidates = ['gemini-1.5-flash', 'gemini-2.0-flash']
     
-    for model_name in models:
+    for model_name in model_candidates:
         try:
             response = client.models.generate_content(
                 model=model_name,
@@ -58,7 +64,7 @@ def generate_ai_summary(commits):
             print(f"Model {model_name} failed: {e}")
             continue
             
-    return "（AI要約はクォータ制限のため生成できなかった。）"
+    return "（AI要約はクォータ制限により生成できなかった。）"
 
 def build_blocks(commits, ai_summary):
     blocks = [
