@@ -1,5 +1,6 @@
 import os
 import requests
+import time
 from datetime import datetime
 from google import genai
 
@@ -10,7 +11,7 @@ REPO_NAME = os.environ["REPO_NAME"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 REPO_PATH = os.environ["GITHUB_REPOSITORY"]
 
-# 最新のGemini Client設定
+# クライアント初期化
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 headers = {
@@ -21,33 +22,43 @@ headers = {
 
 def get_weekly_commits():
     import subprocess
-    cmd = ['git', 'log', '--since="1 week ago"', '--pretty=format:%s|%h']
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # コミットメッセージとハッシュを | で繋いで取得
+    cmd = ['git', 'log', '--since="1 week ago" --no-merges', '--pretty=format:%s|%h']
+    result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
     if not result.stdout.strip():
         return []
-    return [line.split('|') for line in result.stdout.strip().split('\n')]
+    
+    commits = []
+    for line in result.stdout.strip().split('\n'):
+        if '|' in line:
+            # 右側から1回だけ分割することで、メッセージ内の | に影響されないようにする
+            parts = line.rsplit('|', 1)
+            if len(parts) == 2:
+                commits.append(parts)
+    return commits
 
 def generate_ai_summary(commits):
     if not commits:
         return "今週の更新はない。"
     
     commit_list = "\n".join([f"- {msg}" for msg, _ in commits])
-    prompt = f"""
-    以下はリポジトリ「{REPO_NAME}」の今週のコミット履歴である。
-    内容を分析し、どのような進捗があったか簡潔な3項目程度の「だである調」で要約せよ。
+    prompt = f"以下はリポジトリ「{REPO_NAME}」の今週のコミット履歴である。簡潔に3項目程度の「だである調」で要約せよ。\n\n{commit_list}"
     
-    【コミット履歴】
-    {commit_list}
-    """
-    try:
-        # gemini-2.0-flash を使用
-        response = client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=prompt
-        )
-        return response.text.strip()
-    except Exception as e:
-        return f"要約の生成に失敗した。 (詳細: {e})"
+    # 1.5-flashを優先（無料枠の制限が緩いため）
+    models = ['gemini-1.5-flash', 'gemini-2.0-flash']
+    
+    for model_name in models:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
+            return response.text.strip()
+        except Exception as e:
+            print(f"Model {model_name} failed: {e}")
+            continue
+            
+    return "（AI要約はクォータ制限のため生成できなかった。）"
 
 def build_blocks(commits, ai_summary):
     blocks = [
@@ -60,7 +71,7 @@ def build_blocks(commits, ai_summary):
     ]
 
     if not commits:
-        blocks.append({"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"text": {"content": "更新なし。"}}]}})
+        blocks.append({"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"text": {"content": "今週の更新はない。"}}]}})
         return blocks
 
     categories = {"Features ✨": ["feat"], "Fixes 🛠️": ["fix"], "Refactoring ♻️": ["refactor"], "Others 📄": []}
@@ -105,4 +116,8 @@ if __name__ == "__main__":
     summary = generate_ai_summary(commits)
     blocks = build_blocks(commits, summary)
     res = create_notion_page(blocks)
-    print(f"Final Success: {res.get('url')}")
+    
+    if "url" in res:
+        print(f"Final Success! Page URL: {res['url']}")
+    else:
+        print(f"Notion API Error: {res}")
