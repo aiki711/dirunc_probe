@@ -93,8 +93,8 @@ def create_notion_page(blocks):
     payload = {
         "parent": {"database_id": DATABASE_ID},
         "properties": {
-            "名前": {"title": [{"text": {"content": f"{REPO_NAME} 進捗 ({date_str}週)"}}]},
-            "日付": {"date": {"start": date_str}}
+            "Name": {"title": [{"text": {"content": f"{REPO_NAME} 進捗 ({date_str}週)"}}]},
+            "Date": {"date": {"start": date_str}}
         },
         "children": blocks[:100]
     }
