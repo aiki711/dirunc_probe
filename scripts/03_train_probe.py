@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import f1_score
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
@@ -434,6 +434,199 @@ class QueryTokenProbe(nn.Module):
         }
         return logits
 
+# ---------------- Activation Caching ----------------
+
+class BaselineHead(nn.Module):
+    def __init__(self, hidden_size: int, num_labels: int, dtype: torch.dtype):
+        super().__init__()
+        self.linear = nn.Linear(hidden_size, num_labels).to(dtype=dtype)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, H)
+        return self.linear(x)
+
+class QueryHead(nn.Module):
+    def __init__(self, hidden_size: int, num_labels: int, dtype: torch.dtype):
+        super().__init__()
+        # Matches QueryTokenProbe: W (6, H), b (6)
+        self.W = nn.Parameter(torch.empty(num_labels, hidden_size, dtype=dtype))
+        self.b = nn.Parameter(torch.zeros(num_labels, dtype=dtype))
+        nn.init.normal_(self.W, mean=0.0, std=0.02)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, 6, H)
+        # logit[b, d] = (x[b, d, :] * W[d, :]).sum() + b[d]
+        out = (x * self.W.unsqueeze(0)).sum(dim=2) + self.b.unsqueeze(0)
+        return out
+
+@torch.no_grad()
+def extract_activations(
+    dl: DataLoader,
+    base_model: ProbeModelBase,
+    layer_idx: int,
+    mode: str,
+    device: torch.device,
+    tokenizer: Any = None,
+) -> Tuple[torch.Tensor, torch.Tensor, Optional[Dict[str, Any]]]:
+    """
+    Run the LLM (base_model) once over the dataloader 'dl'.
+    Return:
+      X: features. 
+         If mode='baseline': (N, H)
+         If mode='query':    (N, 6, H)
+      y: labels (N, 6)
+      span_summary: stats (only for query mode)
+    """
+    base_model.lm.eval()
+    all_x = []
+    all_y = []
+    
+    # For query mode
+    span_acc = _init_span_acc() if mode == "query" else None
+    
+    token_id = {}
+    if mode == "query":
+        # prepare token ids
+         for d, tstr in QUERY_LABEL_STR.items():
+            token_id[d] = tokenizer.convert_tokens_to_ids(tstr)
+
+    # Use tqdm only if not excessively spamming? 
+    # Caller controls tqdm on dl? The DL here is passed from train_one_layer.
+    # We'll just iterate.
+    
+    for batch in dl:
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        y = batch["y"].to(device)
+        
+        # Forward pass LLM
+        out = base_model.lm(input_ids=input_ids, attention_mask=attention_mask)
+        hs = base_model.get_layer_hidden(out.hidden_states, layer_idx)  # (B, T, H)
+        
+        bsz = input_ids.size(0)
+        
+        if mode == "baseline":
+            # EOS pooling
+            lengths = attention_mask.long().sum(dim=1) - 1
+            h_last = hs[torch.arange(bsz, device=device), lengths] # (B, H)
+            all_x.append(h_last.cpu())
+            
+        elif mode == "query":
+            # Query token search
+            # logic copied from QueryTokenProbe.forward
+            
+            # stats for this batch
+            found_counts = {d: 0 for d in DIRS}
+            total_counts = {d: 0 for d in DIRS}
+            batch_all_found = 0
+            
+            logits_list = [] # actually we want features list
+            
+            batch_features = [] # shape (B, 6, H)
+            
+            for bi in range(bsz):
+                mask = attention_mask[bi]
+                valid_indices = torch.nonzero(mask).squeeze(-1)
+                
+                if valid_indices.numel() == 0:
+                    # dummy
+                    batch_features.append(torch.zeros(len(DIRS), hs.size(-1), device=device, dtype=hs.dtype))
+                    continue
+                    
+                ids_list = input_ids[bi, valid_indices].tolist()
+                h_vec = hs[bi, valid_indices, :]
+                
+                dir_vecs = []
+                sample_all_found = True
+                
+                for d in DIRS:
+                    total_counts[d] += 1
+                    tid = token_id[d]
+                    
+                    # Search from end
+                    pos = None
+                    for j in range(len(ids_list) - 1, -1, -1):
+                        if ids_list[j] == tid:
+                            pos = j
+                            break
+                    
+                    if pos is None:
+                        sample_all_found = False
+                        vec = h_vec[-1] # Fallback
+                    else:
+                        vec = h_vec[pos]
+                        found_counts[d] += 1
+                        
+                    dir_vecs.append(vec)
+                
+                if sample_all_found:
+                    batch_all_found += 1
+                    
+                # Stack for this sample: (6, H)
+                batch_features.append(torch.stack(dir_vecs, dim=0))
+            
+            # Update global stats
+            # We need to simulate the structure expected by _update_span_acc
+            # but _update_span_acc expects 'model.last_span_found'. 
+            # We handle aggregation directly here.
+            for d in DIRS:
+                span_acc["found"][d] += found_counts[d]
+                span_acc["total"][d] += total_counts[d]
+            span_acc["all_found"] += batch_all_found
+            span_acc["n_samples"] += bsz
+            
+            # Stack batch features -> (B, 6, H)
+            if batch_features:
+                all_x.append(torch.stack(batch_features, dim=0).cpu())
+            else:
+                pass # should not happen if bsz > 0
+
+        all_y.append(y.cpu())
+        
+    # Concatenate
+    if len(all_x) == 0:
+        # empty dataset?
+        return torch.empty(0), torch.empty(0), None
+        
+    X = torch.cat(all_x, dim=0) # (N, H) or (N, 6, H)
+    Y = torch.cat(all_y, dim=0) # (N, 6)
+    
+    summary = None
+    if mode == "query":
+        summary = _finalize_span_acc(span_acc)
+        
+    return X, Y, summary
+
+
+@torch.no_grad()
+def evaluate_cached(
+    model: nn.Module,
+    dl: DataLoader,
+    device: torch.device,
+    threshold: float = 0.5
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Evaluate using cached features.
+    model is BaselineHead or QueryHead.
+    dl yields (x, y).
+    """
+    model.eval()
+    ys, ps = [], []
+    for batch in dl:
+        # Tuple of list from TensorDataset? batch is list [x, y]
+        x = batch[0].to(device)
+        y = batch[1].to(device)
+        
+        logits = model(x)
+        prob = torch.sigmoid(logits)
+        
+        ys.append(y.float().cpu().numpy())
+        ps.append(prob.float().cpu().numpy())
+        
+    y_true = np.concatenate(ys, axis=0)
+    p = np.concatenate(ps, axis=0)
+    return y_true, p
+
 # ---------------- Training / Eval ----------------
 
 def collate_batch(tokenizer, batch: List[Dict[str, Any]], max_length: int) -> Dict[str, Any]:
@@ -602,10 +795,28 @@ def train_one_layer(
         pretrained_model=shared_model,
     ).to(device) # model already on device, but .to checks internally
 
+    # --- NEW: Extract Activations Once ---
+    print(f"[{mode} layer={layer_idx}] Extracting features...", flush=True)
+    X_train, Y_train, train_span = extract_activations(train_dl, base, layer_idx, mode, device, tokenizer)
+    X_dev, Y_dev, dev_span = extract_activations(dev_dl, base, layer_idx, mode, device, tokenizer)
+    
+    # Create cached DataLoaders
+    # X_train is (N, ...)
+    train_ds_cached = TensorDataset(X_train, Y_train)
+    dev_ds_cached = TensorDataset(X_dev, Y_dev)
+    
+    train_dl_cached = DataLoader(train_ds_cached, batch_size=batch_size, shuffle=True)
+    dev_dl_cached = DataLoader(dev_ds_cached, batch_size=batch_size, shuffle=False)
+    
+    dtype = X_train.dtype
+    hidden_size = base.hidden_size # derived from base
+    
     if mode == "baseline":
-        model = EosPoolingProbe(base).to(device)
+        model = BaselineHead(hidden_size, len(DIRS), dtype).to(device)
+        # model = EosPoolingProbe(base).to(device) 
     elif mode == "query":
-        model = QueryTokenProbe(base, tokenizer).to(device)
+        model = QueryHead(hidden_size, len(DIRS), dtype).to(device)
+        # model = QueryTokenProbe(base, tokenizer).to(device)
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
@@ -622,17 +833,17 @@ def train_one_layer(
         n = 0
         span_acc_train = _init_span_acc()
 
-        total_batches = len(train_dl)
+        total_batches = len(train_dl_cached)
         for i, batch in enumerate(tqdm(
-            train_dl, 
+            train_dl_cached, 
             desc=f"train {mode} layer={layer_idx} ep={ep}", 
             leave=False, disable=no_tqdm, mininterval=tqdm_mininterval)):
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            y = batch["y"].to(device)
+            
+            x = batch[0].to(device)
+            y = batch[1].to(device)
 
-            logits = model(input_ids=input_ids, attention_mask=attention_mask, layer_idx=layer_idx)
-            _update_span_acc(span_acc_train, model)
+            logits = model(x)
+            # _update_span_acc(span_acc_train, model) # No longer needed/available during train loop
             loss = F.binary_cross_entropy_with_logits(logits, y)
 
             optim.zero_grad(set_to_none=True)
@@ -652,31 +863,34 @@ def train_one_layer(
         train_loss = total_loss / max(1, n)
 
         # ====== NEW: dev上で threshold をチューニングして評価 ======
-        y_true_dev, p_dev, span_summary_dev = collect_probs(model, dev_dl, device, layer_idx)
+        # y_true_dev, p_dev, span_summary_dev = collect_probs(model, dev_dl_cached, device, layer_idx)
+        # Use simple evaluate_cached
+        y_true_dev, p_dev = evaluate_cached(model, dev_dl_cached, device)
 
         tuned = tune_threshold(
             y_true_dev,
             p_dev,
-            metric="macro_f1_posonly",   # <- "micro_f1" に変えてもOK
-            grid=None,           # <- Noneなら 0.05..0.95 step 0.05（関数側デフォルト）
+            metric="macro_f1_posonly", 
+            grid=None,
         )
-        dev_metrics = dict(tuned["metrics"])  # includes micro_f1/macro_f1/per_label_f1/threshold
-
+        dev_metrics = dict(tuned["metrics"]) 
+        
         # span found 率（query モードのときだけ入る想定）
-        if span_summary_dev is not None:
-            dev_metrics["span_found"] = span_summary_dev
-
-        # どの指標でチューニングしたかもログへ
+        # Now we used cached span stats!
+        if dev_span is not None:
+             dev_metrics["span_found"] = dev_span
+             
+        # ... logic ...
         dev_metrics["tuned"] = {
             "metric": "macro_f1_posonly",
             "best_threshold": float(tuned["threshold"]),
             "best_score": float(tuned["score"]),
         }
 
-        # train側 span found（あなたの既存処理を維持）
-        span_summary_train = _finalize_span_acc(span_acc_train)
-        if span_summary_train is not None:
-            dev_metrics["span_found_train"] = span_summary_train
+        # train側 span found
+        # In cached mode, we calculated this once at extraction. 
+        if train_span is not None:
+            dev_metrics["span_found_train"] = train_span
 
         record = {
             "mode": mode,
@@ -708,29 +922,57 @@ def train_one_layer(
         model.load_state_dict(torch.load(best_path, map_location=device))
 
     best_th = float(best.get("threshold", threshold))
-    best_dev_metrics = evaluate(model, dev_dl, device, layer_idx, threshold=best_th)
-    best["final_dev"] = best_dev_metrics  # 参考：最終的にbest重みで測った値
+    # best_dev_metrics = evaluate(model, dev_dl, device, layer_idx, threshold=best_th)
+    # We can just rely on the last epoch or re-eval. 
+    # Let's re-eval using evaluate_cached with threshold
+    y_dev, p_dev = evaluate_cached(model, dev_dl_cached, device)
+    best_dev_metrics = eval_with_threshold(y_dev, p_dev, best_th)
+    if dev_span:
+        best_dev_metrics["span_found"] = dev_span
+    best["final_dev"] = best_dev_metrics
 
     if eval_services:
         best["dev_by_service"] = {}
+        # Need to handle service slicing for cached data?
+        # The 'dev_rows' logic relies on raw rows. 
+        # But we now operate on cached tensors. 
+        # We need to slice the tensors based on service.
+        # It's tricky because shuffled? dev_dl is shuffle=False.
+        # But FilterSpec might have filtered rows. 
+        
+        # We can reconstruct which indices belong to which service if we iterate dev_rows_use.
+        # dev_rows_use aligns with X_dev indices (0..N).
+        
+        # Create a map: service -> [indices]
+        svc_indices: Dict[str, List[int]] = {}
+        for i, r in enumerate(dev_rows_use):
+            s = str(r.get("service", ""))
+            if s not in svc_indices:
+                svc_indices[s] = []
+            svc_indices[s].append(i)
+            
         for svc in eval_services:
-            dev_rows_s = [r for r in dev_rows_use if str(r.get("service", "")) == svc]
-            if not dev_rows_s:
+            idxs = svc_indices.get(svc, [])
+            if not idxs:
                 best["dev_by_service"][svc] = {"n_rows": 0}
                 continue
-
-            dev_ds_s = JsonlDirUncDataset(dev_rows_s, filter_spec)
-            dev_dl_s = DataLoader(
-                dev_ds_s,
-                batch_size=batch_size,
-                shuffle=False,
-                collate_fn=lambda b: collate_batch(tokenizer, b, max_length),
-            )
-            m = evaluate(model, dev_dl_s, device, layer_idx, threshold=best_th)
-            m["n_rows"] = len(dev_ds_s)
+            
+            # Slice tensors
+            # X_dev is on CPU? extract_activations returns CPU.
+            idxs_t = torch.tensor(idxs, dtype=torch.long)
+            sub_x = X_dev[idxs_t]
+            sub_y = Y_dev[idxs_t]
+            
+            sub_ds = TensorDataset(sub_x, sub_y)
+            sub_dl = DataLoader(sub_ds, batch_size=batch_size, shuffle=False)
+            
+            y_s, p_s = evaluate_cached(model, sub_dl, device)
+            m = eval_with_threshold(y_s, p_s, best_th)
+            m["n_rows"] = len(idxs)
             best["dev_by_service"][svc] = m
 
     # CLEANUP here to reuse shared model cleanly
+    # (base was created inside this func, but shared_model is passed in)
     if 'base' in locals() and hasattr(base, 'teardown'):
         base.teardown()
 
