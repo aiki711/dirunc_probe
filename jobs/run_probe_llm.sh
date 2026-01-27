@@ -34,7 +34,7 @@ MODEL_NAME=$MODEL_GEMMA
 #MODEL_NAME=$MODEL_LLAMA
 
 # Output Dir
-RUN_NAME="runs/run_gemma_2b_contrastive_$(date +%Y%m%d_%H%M%S)"
+RUN_NAME="runs/run_gemma_2b_contrastive"
 OUT_DIR="${RUN_NAME}"
 
 echo "Model: ${MODEL_NAME}"
@@ -61,13 +61,13 @@ python scripts/03_train_probe.py \
   --no_tqdm \
   --tqdm_mininterval 30 2>&1 | tee "${LOG_FILE}"
 
-# Visualization (Optional)
-# python scripts/06_viz_dirunc.py \
-#   --train_jsonl data/processed/sgd/dirunc_contrastive_full/train.jsonl \
-#   --dev_jsonl   data/processed/sgd/dirunc_contrastive_full/dev.jsonl \
-#   --summary_json "${OUT_DIR}/summary.json" \
-#   --out_dir "${OUT_DIR}/viz_main" \
-#   --cooc_norm rate
+# Visualization
+python scripts/06_viz_dirunc.py \
+  --train_jsonl data/processed/sgd/dirunc_contrastive_downsampled/train.jsonl \
+  --dev_jsonl   data/processed/sgd/dirunc_contrastive_downsampled/dev.jsonl \
+  --summary_json "${OUT_DIR}/summary.json" \
+  --out_dir "${OUT_DIR}/viz_main" \
+  --cooc_norm rate
 
 echo "=== JOB END ==="
 date
