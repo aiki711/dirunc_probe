@@ -2,7 +2,7 @@ name: Weekly Notion AI Progress Sync
 
 on:
   schedule:
-    - cron: '0 0 * * 1' # 毎週月曜 0:00 (UTC)
+    - cron: '40 1 * * 2' # 毎週月曜 0:00 (UTC)
   workflow_dispatch:   # 手動実行用ボタン
 
 jobs:
