@@ -2,8 +2,8 @@ name: Weekly Notion AI Progress Sync
 
 on:
   schedule:
-    - cron: '40 1 * * 2' # 毎週月曜 0:00 (UTC)
-  workflow_dispatch:   # 手動実行用ボタン
+    - cron: '0 2 * * 2'   # 毎週火曜日 11:00 (日本時間) = 2:00 (UTC)
+  workflow_dispatch:      # 手動実行用ボタン
 
 jobs:
   sync:
@@ -27,6 +27,7 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          REPO_NAME: ${{ github.event.repository.name }}
+          # 修正ポイント：スケジュール実行でも確実に名前を取れるように変更
+          REPO_NAME: "persona_vectors"
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python .github/scripts/sync_to_notion.py
