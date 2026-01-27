@@ -40,7 +40,8 @@ def normalize_text(s: str) -> str:
 
 WHO_KWS = [
     "attendee", "contact", "recipient", "person", "customer", "client",
-    "doctor", "trainer", "agent", "name of person"
+    "doctor", "trainer", "agent", "name of person",
+    "stylist", "dentist", "therapist", "receiver", "host", "guest"
 ]
 WHEN_KWS = [
     "date", "time", "day", "week", "month", "year", "duration",
@@ -50,7 +51,7 @@ WHERE_KWS = [
     "location", "address", "city", "place", "destination", "origin",
     "airport", "station", "area", "neighborhood", "venue"
 ]
-WHY_KWS = ["reason", "purpose", "because"]
+WHY_KWS = ["reason", "purpose", "because", "intent"]
 HOW_KWS = ["method", "mode", "transport", "payment", "delivery", "format", "via", "type", "option", "shared", "ride"]
 HOW_MANY_KWS = ["number", "count", "amount", "quantity", "seats", "riders", "guests", "party_size", "people"]
 HOW_MODE_KWS = ["shared", "private", "mode", "option"]

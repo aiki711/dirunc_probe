@@ -14,7 +14,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, average_precision_score
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
@@ -52,6 +52,27 @@ def read_jsonl(path: Path) -> List[Dict[str, Any]]:
 
 def safe_mkdir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+def compute_auc_pr(y_true: np.ndarray, y_prob: np.ndarray) -> Dict[str, Any]:
+    # y_true: (N, C), y_prob: (N, C)
+    if y_true.size == 0:
+        return {}
+    
+    micro = average_precision_score(y_true, y_prob, average="micro")
+    macro = average_precision_score(y_true, y_prob, average="macro")
+    per_label = average_precision_score(y_true, y_prob, average=None)
+    
+    # safe handling for per_label if it returns scalar or array
+    if isinstance(per_label, (float, int)):
+        per_label = [float(per_label)]
+    else:
+        per_label = per_label.tolist()
+
+    return {
+        "micro_auc_pr": float(micro),
+        "macro_auc_pr": float(macro),
+        "per_label_auc_pr": per_label,
+    }
 
 def micro_macro_f1(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, Any]:
     # y_true/y_pred: (N, 6) binary
@@ -678,13 +699,16 @@ def train_probe_from_cache(
 
         y_true_dev, p_dev = evaluate_cached(model, dev_dl_cached, device)
 
+        auc_metrics = compute_auc_pr(y_true_dev, p_dev)
+
         tuned = tune_threshold(
             y_true_dev,
             p_dev,
             metric="macro_f1_posonly", 
             grid=None,
         )
-        dev_metrics = dict(tuned["metrics"]) 
+        dev_metrics = dict(tuned["metrics"])
+        dev_metrics.update(auc_metrics) 
         
         if dev_span_summary is not None:
              dev_metrics["span_found"] = dev_span_summary

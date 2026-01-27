@@ -11,8 +11,9 @@ set -euo pipefail
 export PYTHONUNBUFFERED=1
 
 # Activate virtualenv if exists
-if [ -f dirunc_probe/bin/activate ]; then
-    source dirunc_probe/bin/activate
+# Activate virtualenv if exists
+if [ -f ../persona_vectors/persona_steering/bin/activate ]; then
+    source ../persona_vectors/persona_steering/bin/activate
 fi
 
 cd "${PBS_O_WORKDIR:-$PWD}"
@@ -68,6 +69,13 @@ python scripts/06_viz_dirunc.py \
   --summary_json "${OUT_DIR}/summary.json" \
   --out_dir "${OUT_DIR}/viz_main" \
   --cooc_norm rate
+
+# Analysis (Cosine Sim & Gap)
+python scripts/07_analyze_probe.py \
+  --summary_json "${OUT_DIR}/summary.json" \
+  --out_dir "${OUT_DIR}/analysis" \
+  --dev_jsonl data/processed/sgd/dirunc_contrastive_downsampled/dev.jsonl \
+  --analyze_mode best
 
 echo "=== JOB END ==="
 date
