@@ -44,7 +44,7 @@ def plot_cosine_sim(weight_matrix: torch.Tensor, out_path: Path):
     # Normalize rows
     norms = weight_matrix.norm(p=2, dim=1, keepdim=True) + 1e-8
     normalized = weight_matrix / norms
-    sim = torch.mm(normalized, normalized.t()).detach().cpu().numpy()
+    sim = torch.mm(normalized, normalized.t()).detach().float().cpu().numpy()
     
     plt.figure(figsize=(8, 6))
     sns.heatmap(sim, annot=True, fmt=".2f", xticklabels=DIRS, yticklabels=DIRS, cmap="RdBu_r", vmin=-1, vmax=1)

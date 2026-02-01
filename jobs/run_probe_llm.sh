@@ -35,14 +35,14 @@ MODEL_NAME=$MODEL_GEMMA
 #MODEL_NAME=$MODEL_LLAMA
 
 # Output Dir
-RUN_NAME="runs/run_gemma_2b_contrastive"
+RUN_NAME="runs/run_gemma_2b_contrastive_small"
 OUT_DIR="${RUN_NAME}"
 
 echo "Model: ${MODEL_NAME}"
 echo "OutDir: ${OUT_DIR}"
 
 # Log file setup
-LOG_FILE="log/dirunc_llm_$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="log/dirunc_llm_small_$(date +%Y%m%d_%H%M%S).log"
 echo "Logging to: ${LOG_FILE}"
 
 # Training
@@ -50,7 +50,7 @@ echo "Logging to: ${LOG_FILE}"
 # Using small batch size due to VRAM constraints.
 python scripts/03_train_probe.py \
   --model_name "${MODEL_NAME}" \
-  --data_dir data/processed/sgd/dirunc_contrastive_downsampled \
+  --data_dir data/processed/sgd/dirunc_contrastive_small \
   --out_dir "${OUT_DIR}" \
   --epochs 2 \
   --batch_size 4 \
@@ -64,8 +64,8 @@ python scripts/03_train_probe.py \
 
 # Visualization
 python scripts/06_viz_dirunc.py \
-  --train_jsonl data/processed/sgd/dirunc_contrastive_downsampled/train.jsonl \
-  --dev_jsonl   data/processed/sgd/dirunc_contrastive_downsampled/dev.jsonl \
+  --train_jsonl data/processed/sgd/dirunc_contrastive_small/train.jsonl \
+  --dev_jsonl   data/processed/sgd/dirunc_contrastive_small/dev.jsonl \
   --summary_json "${OUT_DIR}/summary.json" \
   --out_dir "${OUT_DIR}/viz_main" \
   --cooc_norm rate
@@ -74,7 +74,7 @@ python scripts/06_viz_dirunc.py \
 python scripts/07_analyze_probe.py \
   --summary_json "${OUT_DIR}/summary.json" \
   --out_dir "${OUT_DIR}/analysis" \
-  --dev_jsonl data/processed/sgd/dirunc_contrastive_downsampled/dev.jsonl \
+  --dev_jsonl data/processed/sgd/dirunc_contrastive_small/dev.jsonl \
   --analyze_mode best
 
 echo "=== JOB END ==="
