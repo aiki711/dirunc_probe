@@ -12,9 +12,9 @@ export PYTHONUNBUFFERED=1
 
 # Activate virtualenv if exists
 # Activate virtualenv if exists
-if [ -f ../persona_vectors/persona_steering/bin/activate ]; then
-    source ../persona_vectors/persona_steering/bin/activate
-fi
+# if [ -f ../persona_vectors/persona_steering/bin/activate ]; then
+#     source ../persona_vectors/persona_steering/bin/activate
+# fi
 
 cd "${PBS_O_WORKDIR:-$PWD}"
 mkdir -p log runs
