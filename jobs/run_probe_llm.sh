@@ -11,10 +11,12 @@ set -euo pipefail
 export PYTHONUNBUFFERED=1
 
 # Activate virtualenv if exists
-# Activate virtualenv if exists
-# if [ -f ../persona_vectors/persona_steering/bin/activate ]; then
-#     source ../persona_vectors/persona_steering/bin/activate
-# fi
+# Check if virtualenv exists and source it
+if [ -f dirunc_probe/bin/activate ]; then
+    source dirunc_probe/bin/activate
+elif [ -f ../dirunc_probe/bin/activate ]; then
+    source ../dirunc_probe/bin/activate
+fi
 
 cd "${PBS_O_WORKDIR:-$PWD}"
 mkdir -p log runs
@@ -50,8 +52,8 @@ echo "Logging to: ${LOG_FILE}"
 # Using small batch size due to VRAM constraints.
 python scripts/03_train_probe.py \
   --model_name "${MODEL_NAME}" \
-  --data_dir data/processed/sgd/dirunc_contrastive_small \
-  --out_dir "${OUT_DIR}" \
+  --data_dir data/processed/sgd/dirunc_contrastive_2k \
+  --out_dir "${OUT_DIR}_2k" \
   --epochs 2 \
   --batch_size 4 \
   --lr 5e-5 \
