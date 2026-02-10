@@ -19,18 +19,7 @@ from torch.utils.data import DataLoader, Dataset, TensorDataset
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
-DIRS = ["who", "what", "when", "where", "why", "how"]
-
-QUERY_LABEL_STR = {
-    "who": "[WHO?]",
-    "what": "[WHAT?]",
-    "when": "[WHEN?]",
-    "where": "[WHERE?]",
-    "why": "[WHY?]",
-    "how": "[HOW?]",
-}
-SPECIAL_TOKENS = list(QUERY_LABEL_STR.values())
-QUERY_TOKENS = tuple(SPECIAL_TOKENS)
+from common import DIRS, QUERY_LABEL_STR, SPECIAL_TOKENS, QUERY_TOKENS
 
 # ---------------- Utils ----------------
 
@@ -197,8 +186,13 @@ class JsonlDirUncDataset(Dataset):
     def _filter(rows: List[Dict[str, Any]], fs: FilterSpec) -> List[Dict[str, Any]]:
         out = []
         for r in rows:
-            ph = int(r.get("phase"))
-            lv = int(r.get("level"))
+            # Handle missing metadata safely (default to 0)
+            ph_val = r.get("phase", 0)
+            ph = int(ph_val) if ph_val is not None else 0
+            
+            lv_val = r.get("level", 0)
+            lv = int(lv_val) if lv_val is not None else 0
+            
             kv = r.get("k", None)
             kv_int = None if kv is None else int(kv)
 
@@ -409,10 +403,75 @@ class QueryHead(nn.Module):
         self.W = nn.Parameter(torch.empty(num_labels, hidden_size, dtype=dtype))
         self.b = nn.Parameter(torch.zeros(num_labels, dtype=dtype))
         nn.init.normal_(self.W, mean=0.0, std=0.02)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = (x * self.W.unsqueeze(0)).sum(dim=2) + self.b.unsqueeze(0)
         return out
+
+class LearnableLayerWeights(nn.Module):
+    """
+    複数レイヤーの重み付け和を学習するモジュール
+    """
+    def __init__(self, num_layers: int):
+        super().__init__()
+        # 各レイヤーへの重み（学習可能）
+        self.weights = nn.Parameter(torch.ones(num_layers) / num_layers)
+    
+    def forward(self, layer_features: List[torch.Tensor]) -> torch.Tensor:
+        """
+        Args:
+            layer_features: List[(B, C, H)], length = num_layers
+        Returns:
+            weighted_sum: (B, C, H)
+        """
+        # Softmaxで正規化（合計が1になるように）
+        w = torch.softmax(self.weights, dim=0)
+        
+        # 重み付け和
+        result = sum(w[i] * feat for i, feat in enumerate(layer_features))
+        return result
+    
+    def get_weights(self) -> List[float]:
+        """現在のレイヤー重みを取得（正規化済み）"""
+        with torch.no_grad():
+            w = torch.softmax(self.weights, dim=0)
+            return w.cpu().tolist()
+
+class MultiLayerQueryHead(nn.Module):
+    """
+    複数レイヤーからの特徴を重み付け和で統合するQuery Head
+    """
+    def __init__(self, hidden_size: int, num_layers: int, num_labels: int, dtype: torch.dtype):
+        super().__init__()
+        self.num_layers = num_layers
+        
+        # レイヤー重み付けモジュール
+        self.layer_weights = LearnableLayerWeights(num_layers)
+        
+        # 通常のQuery Head（入力次元は変わらない）
+        self.W = nn.Parameter(torch.empty(num_labels, hidden_size, dtype=dtype))
+        self.b = nn.Parameter(torch.zeros(num_labels, dtype=dtype))
+        nn.init.normal_(self.W, mean=0.0, std=0.02)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (B, num_layers, C, H) - バッチ、レイヤー数、クラス数、隠れ次元
+        Returns:
+            logits: (B, C)
+        """
+        # x: (B, L, C, H) -> List of (B, C, H)
+        layer_features = [x[:, i, :, :] for i in range(self.num_layers)]
+        
+        # 重み付け和: (B, C, H)
+        combined = self.layer_weights(layer_features)
+        
+        # 各directionの予測
+        logits = (combined * self.W.unsqueeze(0)).sum(dim=2) + self.b.unsqueeze(0)
+        return logits
+    
+    def get_layer_weights(self) -> List[float]:
+        """現在のレイヤー重みを取得"""
+        return self.layer_weights.get_weights()
 
 @torch.no_grad()
 def extract_activations(
@@ -585,6 +644,117 @@ def tune_threshold(
     assert best is not None
     return best
 
+def tune_threshold_per_class(
+    y_true: np.ndarray,
+    p: np.ndarray,
+    grid: Optional[List[float]] = None,
+) -> Dict[str, Any]:
+    """
+    クラスごとに最適な閾値を探索し、各クラスのF1スコアを最大化する
+    
+    Args:
+        y_true: Ground truth labels (N, num_classes)
+        p: Predicted probabilities (N, num_classes)
+        grid: Threshold candidates to search
+    
+    Returns:
+        Dictionary containing:
+        - thresholds: List of optimal thresholds per class
+        - per_class_f1: F1 score for each class at its optimal threshold
+        - macro_f1: Average of per-class F1 scores
+        - threshold_dict: Dictionary mapping class names to thresholds
+    """
+    if grid is None:
+        grid = [i / 100.0 for i in range(5, 96, 5)]
+    
+    num_classes = y_true.shape[1]
+    best_thresholds = []
+    best_f1s = []
+    
+    # 各クラスごとに最適閾値を探索
+    for class_idx in range(num_classes):
+        y_c = y_true[:, class_idx]  # このクラスの正解ラベル
+        p_c = p[:, class_idx]        # このクラスの予測確率
+        
+        best_f1 = -1.0
+        best_th = 0.5
+        
+        # このクラスに正例が存在するか確認
+        if y_c.sum() == 0:
+            # 正例がない場合はデフォルト閾値を使用
+            best_thresholds.append(0.5)
+            best_f1s.append(0.0)
+            continue
+        
+        for th in grid:
+            y_pred_c = (p_c >= th).astype(int)
+            
+            # F1スコア計算
+            tp = ((y_pred_c == 1) & (y_c == 1)).sum()
+            fp = ((y_pred_c == 1) & (y_c == 0)).sum()
+            fn = ((y_pred_c == 0) & (y_c == 1)).sum()
+            
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+            
+            if f1 > best_f1:
+                best_f1 = f1
+                best_th = th
+        
+        best_thresholds.append(best_th)
+        best_f1s.append(best_f1)
+    
+    # 正例があるクラスのみでmacro F1を計算
+    support = y_true.sum(axis=0)
+    mask = support > 0
+    if mask.any():
+        macro_f1_posonly = np.mean([best_f1s[i] for i in range(num_classes) if mask[i]])
+    else:
+        macro_f1_posonly = 0.0
+    
+    # クラス名との対応付け
+    threshold_dict = {DIRS[i]: float(best_thresholds[i]) for i in range(len(DIRS))}
+    f1_dict = {DIRS[i]: float(best_f1s[i]) for i in range(len(DIRS))}
+    
+    return {
+        "thresholds": [float(th) for th in best_thresholds],
+        "per_class_f1": [float(f1) for f1 in best_f1s],
+        "macro_f1": float(np.mean(best_f1s)),
+        "macro_f1_posonly": float(macro_f1_posonly),
+        "threshold_dict": threshold_dict,
+        "f1_dict": f1_dict,
+    }
+
+def eval_with_per_class_threshold(
+    y_true: np.ndarray,
+    p: np.ndarray,
+    thresholds: List[float],
+) -> Dict[str, Any]:
+    """
+    クラスごとの閾値を使って予測を行い、メトリクスを計算
+    
+    Args:
+        y_true: Ground truth labels (N, num_classes)
+        p: Predicted probabilities (N, num_classes)
+        thresholds: List of thresholds for each class
+    
+    Returns:
+        Metrics dictionary
+    """
+    num_classes = y_true.shape[1]
+    y_pred = np.zeros_like(y_true, dtype=np.int32)
+    
+    # 各クラスごとに異なる閾値を適用
+    for i in range(num_classes):
+        y_pred[:, i] = (p[:, i] >= thresholds[i]).astype(np.int32)
+    
+    # メトリクス計算
+    metrics = micro_macro_f1(y_true, y_pred)
+    metrics["thresholds_used"] = [float(th) for th in thresholds]
+    
+    return metrics
+
 @torch.no_grad()
 def evaluate(
     model: nn.Module,
@@ -701,22 +871,29 @@ def train_probe_from_cache(
 
         auc_metrics = compute_auc_pr(y_true_dev, p_dev)
 
-        tuned = tune_threshold(
+        # クラスごとの閾値最適化
+        tuned_per_class = tune_threshold_per_class(
             y_true_dev,
             p_dev,
-            metric="macro_f1_posonly", 
             grid=None,
         )
-        dev_metrics = dict(tuned["metrics"])
+        
+        # クラスごとの閾値を使って評価
+        dev_metrics = eval_with_per_class_threshold(
+            y_true_dev,
+            p_dev,
+            tuned_per_class["thresholds"],
+        )
         dev_metrics.update(auc_metrics) 
         
         if dev_span_summary is not None:
              dev_metrics["span_found"] = dev_span_summary
              
-        dev_metrics["tuned"] = {
-            "metric": "macro_f1_posonly",
-            "best_threshold": float(tuned["threshold"]),
-            "best_score": float(tuned["score"]),
+        # クラスごとの閾値情報を追加
+        dev_metrics["per_class_tuned"] = {
+            "threshold_dict": tuned_per_class["threshold_dict"],
+            "f1_dict": tuned_per_class["f1_dict"],
+            "macro_f1_posonly": tuned_per_class["macro_f1_posonly"],
         }
 
         if train_span_summary is not None:
@@ -745,9 +922,16 @@ def train_probe_from_cache(
     if best["macro_f1_posonly"] >= 0 and best_path.exists():
         model.load_state_dict(torch.load(best_path, map_location=device))
 
-    best_th = float(best.get("threshold", threshold))
+    # クラスごとの閾値を取得
+    best_thresholds = best.get("per_class_tuned", {}).get("threshold_dict", None)
+    if best_thresholds is None:
+        # フォールバック：デフォルト閾値
+        best_thresholds = [0.5] * len(DIRS)
+    else:
+        best_thresholds = [best_thresholds[d] for d in DIRS]
+    
     y_dev, p_dev = evaluate_cached(model, dev_dl_cached, device)
-    best_dev_metrics = eval_with_threshold(y_dev, p_dev, best_th)
+    best_dev_metrics = eval_with_per_class_threshold(y_dev, p_dev, best_thresholds)
     if dev_span_summary:
         best_dev_metrics["span_found"] = dev_span_summary
     best["final_dev"] = best_dev_metrics
@@ -774,10 +958,155 @@ def train_probe_from_cache(
             sub_dl = DataLoader(sub_ds, batch_size=batch_size, shuffle=False)
             
             y_s, p_s = evaluate_cached(model, sub_dl, device)
-            m = eval_with_threshold(y_s, p_s, best_th)
+            m = eval_with_per_class_threshold(y_s, p_s, best_thresholds)
             m["n_rows"] = len(idxs)
             best["dev_by_service"][svc] = m
+    
+    return {"best": best, "best_path": str(best_path)}
 
+def train_multilayer_probe_from_cache(
+    *,
+    mode: str,
+    layers: List[int],
+    X_dict: Dict[int, torch.Tensor],
+    Y_train: torch.Tensor,
+    X_dev_dict: Dict[int, torch.Tensor],
+    Y_dev: torch.Tensor,
+    train_span_summary: Optional[Dict[str, Any]],
+    dev_span_summary: Optional[Dict[str, Any]],
+    hidden_size: int,
+    batch_size: int,
+    epochs: int,
+    lr: float,
+    seed: int,
+    out_dir: Path,
+    threshold: float,
+    eval_services: Optional[List[str]],
+    dev_rows_use: List[Dict[str, Any]],
+    no_tqdm: bool,
+    tqdm_mininterval: float,
+) -> Dict[str, Any]:
+    """マルチレイヤー版のプローブ学習関数"""
+    set_seed(seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # 複数レイヤーの特徴を結合
+    X_train_list = [X_dict[l] for l in layers]
+    X_dev_list = [X_dev_dict[l] for l in layers]
+    X_train_stacked = torch.stack(X_train_list, dim=1)
+    X_dev_stacked = torch.stack(X_dev_list, dim=1)
+    
+    train_ds = TensorDataset(X_train_stacked, Y_train)
+    dev_ds = TensorDataset(X_dev_stacked, Y_dev)
+    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    dev_dl = DataLoader(dev_ds, batch_size=batch_size, shuffle=False)
+    
+    dtype = X_train_stacked.dtype
+    if mode != "query":
+        raise ValueError(f"Multi-layer mode only supports 'query', got '{mode}'")
+    
+    model = MultiLayerQueryHead(hidden_size, len(layers), len(DIRS), dtype).to(device)
+    params = [p for p in model.parameters() if p.requires_grad]
+    optim = torch.optim.AdamW(params, lr=lr)
+    
+    best = {"micro_f1": -1.0, "macro_f1_posonly": -1.0}
+    best_path = out_dir / f"best_multilayer.pt"
+    
+    for ep in range(1, epochs + 1):
+        model.train()
+        total_loss = 0.0
+        n = 0
+        total_batches = len(train_dl)
+        
+        for i, batch in enumerate(tqdm(train_dl, desc=f"train multilayer ep={ep}", 
+                                       leave=False, disable=no_tqdm, mininterval=tqdm_mininterval)):
+            x = batch[0].to(device)
+            y = batch[1].to(device)
+            logits = model(x)
+            loss = F.binary_cross_entropy_with_logits(logits, y)
+            
+            optim.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optim.step()
+            
+            total_loss += float(loss.item()) * y.size(0)
+            n += y.size(0)
+            
+            if no_tqdm and (i + 1) % 20000 == 0:
+                print(f"[Epoch {ep}] Step {i+1}/{total_batches} | Loss: {loss.item():.4f}", flush=True)
+        
+        train_loss = total_loss / max(1, n)
+        
+        # Evaluation
+        model.eval()
+        ys, ps = [], []
+        with torch.no_grad():
+            for batch in dev_dl:
+                x, y = batch[0].to(device), batch[1].to(device)
+                logits = model(x)
+                prob = torch.sigmoid(logits)
+                ys.append(y.float().cpu().numpy())
+                ps.append(prob.float().cpu().numpy())
+        
+        y_true_dev = np.concatenate(ys, axis=0)
+        p_dev = np.concatenate(ps, axis=0)
+        auc_metrics = compute_auc_pr(y_true_dev, p_dev)
+        tuned_per_class = tune_threshold_per_class(y_true_dev, p_dev, grid=None)
+        dev_metrics = eval_with_per_class_threshold(y_true_dev, p_dev, tuned_per_class["thresholds"])
+        dev_metrics.update(auc_metrics)
+        
+        if dev_span_summary is not None:
+            dev_metrics["span_found"] = dev_span_summary
+        
+        dev_metrics["per_class_tuned"] = {
+            "threshold_dict": tuned_per_class["threshold_dict"],
+            "f1_dict": tuned_per_class["f1_dict"],
+            "macro_f1_posonly": tuned_per_class["macro_f1_posonly"],
+        }
+        dev_metrics["layer_weights"] = {"weights": model.get_layer_weights(), "layers": layers}
+        
+        if train_span_summary is not None:
+            dev_metrics["span_found_train"] = train_span_summary
+        
+        record = {"mode": "multilayer", "layers": layers, "epoch": ep, "train_loss": train_loss, **dev_metrics}
+        
+        with (out_dir / "log.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        
+        print(f"[Epoch {ep}/{epochs}] mode=multilayer layers={layers} | "
+              f"train_loss={train_loss:.4f} | macro_f1_posonly={dev_metrics.get('macro_f1_posonly',0.0):.4f} | "
+              f"micro_f1={dev_metrics.get('micro_f1',0.0):.4f}")
+        
+        if dev_metrics["macro_f1_posonly"] > best.get("macro_f1_posonly", -1.0):
+            best = {**record}
+            torch.save(model.state_dict(), best_path)
+    
+    if best["macro_f1_posonly"] >= 0 and best_path.exists():
+        model.load_state_dict(torch.load(best_path, map_location=device))
+    
+    best_thresholds = best.get("per_class_tuned", {}).get("threshold_dict", None)
+    if best_thresholds is None:
+        best_thresholds = [0.5] * len(DIRS)
+    else:
+        best_thresholds = [best_thresholds[d] for d in DIRS]
+    
+    model.eval()
+    ys, ps = [], []
+    with torch.no_grad():
+        for batch in dev_dl:
+            x, y = batch[0].to(device), batch[1].to(device)
+            logits = model(x)
+            prob = torch.sigmoid(logits)
+            ys.append(y.float().cpu().numpy())
+            ps.append(prob.float().cpu().numpy())
+    
+    y_dev, p_dev = np.concatenate(ys, axis=0), np.concatenate(ps, axis=0)
+    best_dev_metrics = eval_with_per_class_threshold(y_dev, p_dev, best_thresholds)
+    if dev_span_summary:
+        best_dev_metrics["span_found"] = dev_span_summary
+    best["final_dev"] = best_dev_metrics
+    
     return {"best": best, "best_path": str(best_path)}
 
 # ---------------- Main ----------------
@@ -811,7 +1140,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model_name", type=str, default="distilroberta-base",
                     help="Start small for smoke test; later replace with larger LLM.")
-    ap.add_argument("--data_dir", type=str, default="data/processed/sgd/dirunc")
+    ap.add_argument("--data_dir", type=str, default="data/processed/sgd/dirunc", help="Default data dir (source)")
+    ap.add_argument("--eval_data_dir", type=str, default=None, help="Target data dir for evaluation (if different)")
+    ap.add_argument("--few_shot_data_dir", type=str, default=None, help="Data dir for few-shot examples (usually target train)")
+    ap.add_argument("--few_shot_count", type=int, default=0, help="Number of few-shot examples to mix in")
+
     ap.add_argument("--train_file", type=str, default="train.jsonl")
     ap.add_argument("--dev_file", type=str, default="dev.jsonl")
 
@@ -843,13 +1176,59 @@ def main() -> None:
     ap.add_argument("--out_dir", type=str, default="runs/dirunc_probe")
     ap.add_argument("--eval_services", type=str, default="",
                 help="Comma-separated services to report per-service dev metrics, e.g., 'Flights_3,RideSharing_1'")
+    ap.add_argument("--limit", type=str, default="0", help="Limit train/dev size. Usage: 'train=100,dev=100' or just '100'")
     args = ap.parse_args()
 
     set_seed(args.seed)
 
+    # Parse limit
+    limit_train = 0
+    limit_dev = 0
+    if args.limit:
+        if "," in args.limit:
+            parts = args.limit.split(",")
+            for p in parts:
+                k, v = p.split("=")
+                if k == "train": limit_train = int(v)
+                if k == "dev": limit_dev = int(v)
+        else:
+            limit_train = int(args.limit)
+            limit_dev = int(args.limit)
+
+    # Load Train Data
     data_dir = Path(args.data_dir)
+    print(f"Loading training data from {data_dir}")
     train_rows = read_jsonl(data_dir / args.train_file)
-    dev_rows = read_jsonl(data_dir / args.dev_file)
+    if limit_train > 0:
+        print(f"Limiting train rows to {limit_train}")
+        train_rows = train_rows[:limit_train]
+    
+    # Few-shot Mixing
+    if args.few_shot_data_dir and args.few_shot_count > 0:
+
+        fs_dir = Path(args.few_shot_data_dir)
+        print(f"Loading few-shot data from {fs_dir} (count={args.few_shot_count})")
+        fs_rows = read_jsonl(fs_dir / args.train_file)
+        if len(fs_rows) > args.few_shot_count:
+            rng = random.Random(args.seed)
+            fs_rows = rng.sample(fs_rows, args.few_shot_count)
+        train_rows.extend(fs_rows)
+        print(f"Added {len(fs_rows)} few-shot examples. Total train size: {len(train_rows)}")
+
+    # Load Dev Data (Source or Target)
+    if args.eval_data_dir:
+        eval_dir = Path(args.eval_data_dir)
+        print(f"Loading evaluation data from {eval_dir} (Target)")
+        dev_rows = read_jsonl(eval_dir / args.dev_file)
+    else:
+        print(f"Loading evaluation data from {data_dir} (Source)")
+        dev_rows = read_jsonl(data_dir / args.dev_file)
+        
+    if limit_dev > 0:
+        print(f"Limiting dev rows to {limit_dev}")
+        dev_rows = dev_rows[:limit_dev]
+
+
     eval_services = parse_str_list(args.eval_services)
 
     fs = FilterSpec(
