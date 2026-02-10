@@ -10,8 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-QUERY_TOKENS = " [WHO?] [WHAT?] [WHEN?] [WHERE?] [WHY?] [HOW?]"
-DIRS = ["who", "what", "when", "where", "why", "how"]
+from common import DIRS, QUERY_TOKENS_STR as QUERY_TOKENS, map_slot_to_dir, PLACEHOLDER_BY_DIR, normalize_text, replace_values_in_text, cleanup_deletion_artifacts
 
 SPLITS_DEFAULT = ["train", "dev", "test", "test_seen", "test_unseen"]
 
@@ -33,88 +32,7 @@ def is_user_turn(turn: Dict[str, Any]) -> bool:
     # SGD usually uses 'USER' for user and 'SYSTEM' for assistant
     return turn.get("speaker", "").upper() == "USER"
 
-def normalize_text(s: str) -> str:
-    return re.sub(r"\s+", " ", s).strip()
-
-# ---------- Slot -> 5W1H mapping (heuristic v0) ----------
-
-WHO_KWS = [
-    "attendee", "contact", "recipient", "person", "customer", "client",
-    "doctor", "trainer", "agent", "name of person",
-    "stylist", "dentist", "therapist", "receiver", "host", "guest"
-]
-WHEN_KWS = [
-    "date", "time", "day", "week", "month", "year", "duration",
-    "start time", "end time", "arrive", "leave", "check in", "check out"
-]
-WHERE_KWS = [
-    "location", "address", "city", "place", "destination", "origin",
-    "airport", "station", "area", "neighborhood", "venue"
-]
-WHY_KWS = ["reason", "purpose", "because", "intent"]
-HOW_KWS = ["method", "mode", "transport", "payment", "delivery", "format", "via", "type", "option", "shared", "ride"]
-HOW_MANY_KWS = ["number", "count", "amount", "quantity", "seats", "riders", "guests", "party_size", "people"]
-HOW_MODE_KWS = ["shared", "private", "mode", "option"]
-
-def map_slot_to_dir(slot_name: str, slot_desc: str) -> str:
-    s = (slot_name + " " + slot_desc).lower()
-
-    # WHO first (avoid mapping *_name wrongly when description indicates person/contact)
-    if any(k in s for k in WHO_KWS):
-        return "who"
-    if any(k in s for k in WHEN_KWS):
-        return "when"
-    if any(k in s for k in WHERE_KWS):
-        return "where"
-    if any(k in s for k in WHY_KWS):
-        return "why"
-    if any(k in s for k in HOW_KWS):
-        return "how"
-    if any(k in s for k in HOW_MANY_KWS):
-        return "how"
-    if any(k in s for k in HOW_MODE_KWS):
-        return "how"
-
-    # fallback: treat as WHAT (covers item/service/event, etc.)
-    return "what"
-
-# ---------- Text perturbation (Level0/1) ----------
-
-PLACEHOLDER_BY_DIR = {
-    "who": "someone",
-    "what": "something",
-    "when": "sometime",
-    "where": "somewhere",
-    "why": "for some reason",
-    "how": "somehow",
-}
-
-def cleanup_deletion_artifacts(text: str) -> str:
-    # "in ." / "at ." / "to ." みたいな痕跡を除去
-    text = re.sub(r"\b(in|at|on|to|from|for|with)\s*\.", ".", text, flags=re.IGNORECASE)
-    text = re.sub(r"\b(in|at|on|to|from|for|with)\s*,", ",", text, flags=re.IGNORECASE)
-
-    # 二重スペースや " ,"/" ." を整える
-    text = re.sub(r"\s+([.,!?;:])", r"\1", text)
-    text = re.sub(r"\s{2,}", " ", text)
-    return text.strip()
-
-def replace_values_in_text(
-    text: str,
-    values: Sequence[str],
-    mode: str,                 # "delete" or "placeholder"
-    placeholder: Optional[str] = None,
-) -> str:
-    out = text
-    for v in values:
-        if not v:
-            continue
-        # case-insensitive replace; keep it simple for v0
-        pat = re.compile(re.escape(v), flags=re.IGNORECASE)
-        out = pat.sub("" if mode == "delete" else (placeholder or ""), out)
-    out = normalize_text(out)
-    out = cleanup_deletion_artifacts(out)
-    return out
+# Removed local text utilities (moved to common.py)
 
 # ---------- SGD extraction ----------
 
