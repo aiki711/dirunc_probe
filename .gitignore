@@ -1,7 +1,10 @@
 dirunc_probe/
 data/
+analysis_results/
 log/
 runs/
+temp_multiwoz/
+temp_qasrl/
 __pycache__/
 *.pyc
 .DS_Store

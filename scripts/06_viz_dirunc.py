@@ -44,14 +44,19 @@ def filter_rows(rows, phases=None, levels=None, k_values=None):
     """
     out = []
     for r in rows:
-        ph = int(r.get("phase"))
-        lv = int(r.get("level"))
+        # キーが存在しない場合はフィルタリングをスキップ（None または適当な値を設定）
+        ph_raw = r.get("phase")
+        ph = int(ph_raw) if ph_raw is not None else None
+        
+        lv_raw = r.get("level")
+        lv = int(lv_raw) if lv_raw is not None else None
+        
         kv = r.get("k", None)
         kv_int = None if kv is None else int(kv)
 
-        if phases is not None and ph not in phases:
+        if phases is not None and (ph is None or ph not in phases):
             continue
-        if levels is not None and lv not in levels:
+        if levels is not None and (lv is None or lv not in levels):
             continue
         if k_values is not None:
             if ph == 2 and (kv_int not in k_values):
@@ -119,49 +124,53 @@ def extract_mode_layer_metrics(summary: dict):
     mode_to_layers = defaultdict(set)
 
     for k, v in summary.items():
-        if not isinstance(k, str):
+        if not isinstance(k, str) or "/" not in k:
             continue
-        if k.startswith("baseline/layer_") or k.startswith("query/layer_"):
-            mode, layer_str = k.split("/")
-            layer = int(layer_str.replace("layer_", ""))
-            m = get_best_metrics(v)
-            metrics[mode][layer] = {
-                "micro_f1": float(m.get("micro_f1", 0.0)),
-                "macro_f1": float(m.get("macro_f1", 0.0)),
-                "macro_f1_posonly": float(m.get("macro_f1_posonly", 0.0)),
-                "threshold": float(m.get("threshold", 0.5)),
-            }
-            mode_to_layers[mode].add(layer)
+        parts = k.split("/")
+        if len(parts) != 2 or not parts[1].startswith("layer_"):
+            continue
+        
+        mode = parts[0]
+        layer_str = parts[1]
+        layer = int(layer_str.replace("layer_", ""))
+        m = get_best_metrics(v)
+        metrics[mode][layer] = {
+            "micro_f1": float(m.get("micro_f1", 0.0)),
+            "macro_f1": float(m.get("macro_f1", 0.0)),
+            "macro_f1_posonly": float(m.get("macro_f1_posonly", 0.0)),
+            "threshold": float(m.get("threshold", 0.5)),
+        }
+        mode_to_layers[mode].add(layer)
 
     mode_to_layers = {m: sorted(list(s)) for m, s in mode_to_layers.items()}
     return mode_to_layers, metrics
 
 def extract_best_blocks(summary: dict):
     out = {}
-    for mode in ["baseline", "query"]:
-        b = summary.get(f"{mode}/best", {})
-        best = b.get("best", {})
-        fd = best.get("final_dev", None)
-        out[mode] = fd if isinstance(fd, dict) else best
-    return out["baseline"], out["query"]
+    for k, v in summary.items():
+        if isinstance(k, str) and k.endswith("/best"):
+            mode = k.split("/")[0]
+            best = v.get("best", {})
+            fd = best.get("final_dev", None)
+            out[mode] = fd if isinstance(fd, dict) else best
+    return out
 
 def print_B2_numbers(summary: dict) -> None:
     """B2（best baseline vs best query）で使った数値をprint"""
-    b_best, q_best = extract_best_blocks(summary)
+    best_blocks = extract_best_blocks(summary)
     keys = ["micro_f1", "macro_f1", "macro_f1_posonly"]
-    print("\n=== [B2] best baseline vs best query (final_dev preferred) ===")
-    for mode_name, mm in [("baseline", b_best), ("query", q_best)]:
+    print("\n=== [B2] comparison (final_dev preferred) ===")
+    for mode_name, mm in best_blocks.items():
         vals = {k: float(mm.get(k, 0.0)) for k in keys}
-        layer = mm.get("layer_idx", None)  # final_devには通常入らないので best 側の参照が必要なら後述
+        layer = mm.get("layer_idx", None)
         th = mm.get("threshold", None)
         print(f"- {mode_name}: " + ", ".join([f"{k}={vals[k]:.6f}" for k in keys]) + f", threshold={th}")
 
 def print_B4_numbers(summary: dict) -> None:
     """
-    B4（想定：ラベル別F1 baseline vs query）で使う数値をprint
-    - per_label_f1 と support_pos を baseline/query の best から出す
+    B4（想定：ラベル別F1 comparison）で使う数値をprint
     """
-    b_best, q_best = extract_best_blocks(summary)
+    best_blocks = extract_best_blocks(summary)
 
     def fmt_per_label(mm: dict):
         per = mm.get("per_label_f1", [0.0]*len(DIRS))
@@ -171,16 +180,12 @@ def print_B4_numbers(summary: dict) -> None:
             out.append((d, float(per[i]) if i < len(per) else 0.0, int(sup[i]) if i < len(sup) else 0))
         return out
 
-    print("\n=== [B4] per-label F1 (best baseline vs best query) ===")
-    b_rows = fmt_per_label(b_best)
-    q_rows = fmt_per_label(q_best)
-
-    print("-- baseline --")
-    for d, f1, sup in b_rows:
-        print(f"  {d:>5s}: f1={f1:.6f}, support_pos={sup}")
-    print("-- query --")
-    for d, f1, sup in q_rows:
-        print(f"  {d:>5s}: f1={f1:.6f}, support_pos={sup}")
+    print("\n=== [B4] per-label F1 (best for each mode) ===")
+    for mode_name, mm in best_blocks.items():
+        print(f"-- {mode_name} --")
+        rows = fmt_per_label(mm)
+        for d, f1, sup in rows:
+            print(f"  {d:>5s}: f1={f1:.6f}, support_pos={sup}")
 
 # ---------------- A-main: label supports & co-occurrence ----------------
 
@@ -325,7 +330,7 @@ def plot_B_mode_layer_metrics(summary: dict, out_path: Path):
     fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(10, 10), constrained_layout=True)
 
     for ax, metric_name in zip(axes, ["micro_f1", "macro_f1", "macro_f1_posonly"]):
-        for mode in ["baseline", "query"]:
+        for mode in mode_to_layers.keys():
             xs, ys = series(mode, metric_name)
             if xs:
                 ax.plot(xs, ys, marker="o", label=mode)
@@ -341,18 +346,17 @@ def plot_B_mode_layer_metrics(summary: dict, out_path: Path):
     plt.close(fig)
 
 def plot_B_best_bars(summary: dict, out_path: Path):
-    b_best, q_best = extract_best_blocks(summary)
-
+    best_blocks = extract_best_blocks(summary)
     keys = ["micro_f1", "macro_f1", "macro_f1_posonly"]
-    b = [float(b_best.get(k, 0.0)) for k in keys]
-    q = [float(q_best.get(k, 0.0)) for k in keys]
-
+    
+    modes = sorted(best_blocks.keys())
     x = np.arange(len(keys))
-    width = 0.35
+    width = 0.8 / max(1, len(modes))
 
     fig, ax = plt.subplots(figsize=(8, 4), constrained_layout=True)
-    ax.bar(x - width/2, b, width, label="baseline")
-    ax.bar(x + width/2, q, width, label="query")
+    for i, mode in enumerate(modes):
+        vals = [float(best_blocks[mode].get(k, 0.0)) for k in keys]
+        ax.bar(x + (i - len(modes)/2 + 0.5) * width, vals, width, label=mode)
     ax.set_xticks(x)
     ax.set_xticklabels(keys, rotation=0)
     ax.set_ylim(0, 1.0)
@@ -373,18 +377,22 @@ def extract_mode_layer_perlabel(summary: dict):
     mode_to_layers = defaultdict(set)
 
     for k, v in summary.items():
-        if not isinstance(k, str):
+        if not isinstance(k, str) or "/" not in k:
             continue
-        if k.startswith("baseline/layer_") or k.startswith("query/layer_"):
-            mode, layer_str = k.split("/")
-            layer = int(layer_str.replace("layer_", ""))
-            m = get_best_metrics(v)
-            pl = m.get("per_label_f1", None)
-            if isinstance(pl, list) and len(pl) == len(DIRS):
-                perlabel[mode][layer] = [float(x) for x in pl]
-                mode_to_layers[mode].add(layer)
+        parts = k.split("/")
+        if len(parts) != 2 or not parts[1].startswith("layer_"):
+            continue
 
-    all_layers = sorted(set(mode_to_layers.get("baseline", set()) | mode_to_layers.get("query", set())))
+        mode = parts[0]
+        layer_str = parts[1]
+        layer = int(layer_str.replace("layer_", ""))
+        m = get_best_metrics(v)
+        pl = m.get("per_label_f1", None)
+        if isinstance(pl, list) and len(pl) == len(DIRS):
+            perlabel[mode][layer] = [float(x) for x in pl]
+            mode_to_layers[mode].add(layer)
+
+    all_layers = sorted(set().union(*mode_to_layers.values()))
     return all_layers, perlabel
 
 def plot_B_per_label_f1_vs_layer(summary: dict, out_path: Path):
@@ -397,7 +405,7 @@ def plot_B_per_label_f1_vs_layer(summary: dict, out_path: Path):
 
     for i, d in enumerate(DIRS):
         ax = axes[i]
-        for mode in ["baseline", "query"]:
+        for mode in perlabel.keys():
             xs, ys = [], []
             for L in all_layers:
                 if L in perlabel.get(mode, {}):
@@ -418,19 +426,17 @@ def plot_B_per_label_f1_vs_layer(summary: dict, out_path: Path):
     plt.close(fig)
 
 def plot_B_best_per_label_bar(summary: dict, out_path: Path):
-    b_best, q_best = extract_best_blocks(summary)
-    b_pl = b_best.get("per_label_f1", [0.0]*len(DIRS))
-    q_pl = q_best.get("per_label_f1", [0.0]*len(DIRS))
-
-    b_pl = [float(x) for x in b_pl]
-    q_pl = [float(x) for x in q_pl]
+    best_blocks = extract_best_blocks(summary)
+    modes = sorted(best_blocks.keys())
 
     x = np.arange(len(DIRS))
-    width = 0.35
+    width = 0.8 / max(1, len(modes))
 
     fig, ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
-    ax.bar(x - width/2, b_pl, width, label="baseline(best)")
-    ax.bar(x + width/2, q_pl, width, label="query(best)")
+    for i, mode in enumerate(modes):
+        pl = best_blocks[mode].get("per_label_f1", [0.0]*len(DIRS))
+        pl = [float(x) for x in pl]
+        ax.bar(x + (i - len(modes)/2 + 0.5) * width, pl, width, label=f"{mode}(best)")
     ax.set_xticks(x)
     ax.set_xticklabels(DIRS)
     ax.set_ylim(0, 1.0)

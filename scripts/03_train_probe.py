@@ -481,10 +481,22 @@ def extract_activations(
     mode: str,
     device: torch.device,
     tokenizer: Any = None,
-) -> Tuple[Dict[int, torch.Tensor], torch.Tensor, Optional[Dict[str, Any]]]:
+    save_dir: Optional[Path] = None,
+) -> Tuple[Union[Dict[int, torch.Tensor], Dict[int, Path]], Union[torch.Tensor, Path], Optional[Dict[str, Any]]]:
     base_model.lm.eval()
+    
+    # メモリ節約モード（save_dir指定時）か、オンメモリモードか
+    use_disk = save_dir is not None
+    if use_disk:
+        save_dir.mkdir(parents=True, exist_ok=True)
+        # チャンク保存用のカウンタ
+        chunk_idx = 0
+        CHUNK_SIZE = 100  # バッチ数単位で保存
+    
+    # バッファ
     all_x = {l: [] for l in layers}
     all_y = []
+    
     span_acc = _init_span_acc() if mode == "query" else None
     
     token_id = {}
@@ -492,17 +504,32 @@ def extract_activations(
          for d, tstr in QUERY_LABEL_STR.items():
             token_id[d] = tokenizer.convert_tokens_to_ids(tstr)
 
-    for batch in dl:
+    print(f"DEBUG: Starting extraction loop. Device={device}, DL length={len(dl)}", flush=True)
+
+    batch_count = 0
+    for batch in tqdm(dl, desc="Extracting"):
+        batch_count += 1
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         y = batch["y"].to(device)
-        out = base_model.lm(input_ids=input_ids, attention_mask=attention_mask)
+        
+        try:
+            out = base_model.lm(input_ids=input_ids, attention_mask=attention_mask)
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                torch.cuda.empty_cache()
+                print("WARNING: OOM detected, skipping batch", flush=True)
+                continue
+            else:
+                raise e
+        
         bsz = input_ids.size(0)
         
         if mode == "baseline":
             lengths = attention_mask.long().sum(dim=1) - 1
             
         for layer_idx in layers:
+            # get_layer_hiddenがGPUテンソルを返すと仮定
             hs = base_model.get_layer_hidden(out.hidden_states, layer_idx)
             
             if mode == "baseline":
@@ -559,22 +586,85 @@ def extract_activations(
 
         all_y.append(y.cpu())
         
-    final_x = {}
-    if len(all_y) == 0:
-         for l in layers:
-             final_x[l] = torch.empty(0)
-         return final_x, torch.empty(0), None
-    Y = torch.cat(all_y, dim=0)
+        # ディスク保存処理
+        if use_disk and batch_count >= CHUNK_SIZE:
+             _save_chunk(all_x, all_y, save_dir, chunk_idx, layers)
+             # バッファクリア
+             all_x = {l: [] for l in layers}
+             all_y = []
+             chunk_idx += 1
+             batch_count = 0
+             torch.cuda.empty_cache()
+
+    # 残りのバッファを保存または結合
+    if use_disk:
+        if any(all_x[l] for l in layers) or all_y:
+            _save_chunk(all_x, all_y, save_dir, chunk_idx, layers)
+        
+        # チャンクを結合して1つのファイルにする（またはファイルパスをリストで返す）
+        # ここでは学習スクリプトの互換性のため、結合してファイルに保存し、そのパスを返す形にする
+        print("DEBUG: Merging chunks...", flush=True)
+        final_x_paths = {}
+        for l in layers:
+            merged_x = _merge_chunks(save_dir, "x", l)
+            p = save_dir / f"features_layer_{l}.pt"
+            torch.save(merged_x, p)
+            final_x_paths[l] = p
+            del merged_x
+            
+        merged_y = _merge_chunks(save_dir, "y", None)
+        y_path = save_dir / "labels.pt"
+        torch.save(merged_y, y_path)
+        
+        # 一時チャンク削除
+        for f in save_dir.glob("chunk_*.pt"):
+            f.unlink()
+        
+        summary = None
+        if mode == "query":
+            summary = _finalize_span_acc(span_acc)
+        return final_x_paths, y_path, summary
+
+    else:
+        # 既存のオンメモリ結合処理
+        final_x = {}
+        if len(all_y) == 0:
+             for l in layers:
+                 final_x[l] = torch.empty(0)
+             return final_x, torch.empty(0), None
+        Y = torch.cat(all_y, dim=0)
+        for l in layers:
+            if all_x[l]:
+                 final_x[l] = torch.cat(all_x[l], dim=0)
+            else:
+                 final_x[l] = torch.empty(0)
+        
+        summary = None
+        if mode == "query":
+            summary = _finalize_span_acc(span_acc)
+        return final_x, Y, summary
+
+def _save_chunk(all_x, all_y, save_dir, chunk_idx, layers):
+    if all_y:
+        y_chunk = torch.cat(all_y, dim=0)
+        torch.save(y_chunk, save_dir / f"chunk_{chunk_idx}_y.pt")
+    
     for l in layers:
         if all_x[l]:
-             final_x[l] = torch.cat(all_x[l], dim=0)
-        else:
-             final_x[l] = torch.empty(0)
-    
-    summary = None
-    if mode == "query":
-        summary = _finalize_span_acc(span_acc)
-    return final_x, Y, summary
+            x_chunk = torch.cat(all_x[l], dim=0)
+            torch.save(x_chunk, save_dir / f"chunk_{chunk_idx}_x_layer_{l}.pt")
+
+def _merge_chunks(save_dir, type_str, layer_idx):
+    if type_str == "y":
+        chunk_files = sorted(save_dir.glob("chunk_*_y.pt"), key=lambda x: int(x.name.split('_')[1]))
+        if not chunk_files:
+            return torch.empty(0) # No data for this type
+        return torch.cat([torch.load(p) for p in chunk_files], dim=0)
+    else:
+        chunk_files = sorted(save_dir.glob(f"chunk_*_x_layer_{layer_idx}.pt"), key=lambda x: int(x.name.split('_')[1]))
+        if not chunk_files:
+            return torch.empty(0) # No data for this type/layer
+        return torch.cat([torch.load(p) for p in chunk_files], dim=0)
 
 @torch.no_grad()
 def evaluate_cached(
@@ -1173,6 +1263,12 @@ def main() -> None:
     ap.add_argument("--no_tqdm", action="store_true", help="Disable tqdm progress bars (better for nohup logs)")
     ap.add_argument("--tqdm_mininterval", type=float, default=5.0, help="tqdm update interval seconds")
 
+    # Multi-layer fusion arguments
+    ap.add_argument("--multilayer", action="store_true",
+                    help="Enable multi-layer feature fusion (uses LearnableLayerWeights)")
+    ap.add_argument("--fusion_layers", type=str, default="10,15,20,25",
+                    help="Comma-separated list of layers to fuse in multilayer mode")
+
     ap.add_argument("--out_dir", type=str, default="runs/dirunc_probe")
     ap.add_argument("--eval_services", type=str, default="",
                 help="Comma-separated services to report per-service dev metrics, e.g., 'Flights_3,RideSharing_1'")
@@ -1329,9 +1425,9 @@ def main() -> None:
         dev_ds_ex = JsonlDirUncDataset(dev_rows_use, fs)
         
         train_dl_ex = DataLoader(train_ds_ex, batch_size=bs_extract, shuffle=False, 
-                                 collate_fn=lambda b: collate_batch(tokenizer, b, args.max_length), num_workers=2)
+                                 collate_fn=lambda b: collate_batch(tokenizer, b, args.max_length), num_workers=0)
         dev_dl_ex = DataLoader(dev_ds_ex, batch_size=bs_extract, shuffle=False,
-                               collate_fn=lambda b: collate_batch(tokenizer, b, args.max_length), num_workers=2)
+                               collate_fn=lambda b: collate_batch(tokenizer, b, args.max_length), num_workers=0)
 
         # --- MULTI-LAYER EXTRACTION ---
         print(f"[{mode}] Extracting activations for layers {layers} with BS={bs_extract}...", flush=True)
@@ -1487,6 +1583,81 @@ def main() -> None:
     
     results["best_overall"] = best_overall
     results["best_overall_key"] = best_key
+    
+    # ========== Multi-layer fusion ==========
+    if args.multilayer:
+        print("\n" + "="*60)
+        print("Multi-Layer Feature Fusion")
+        print("="*60)
+        
+        fusion_layers = [int(x.strip()) for x in args.fusion_layers.split(",")]
+        print(f"Fusion layers: {fusion_layers}")
+        
+        multilayer_dir = out_dir / "multilayer"
+        safe_mkdir(multilayer_dir)
+        
+        # Extract features for fusion layers
+        print(f"\nExtracting features for {len(fusion_layers)} layers...", flush=True)
+        base = ProbeModelBase(
+            args.model_name,
+            vocab_size=None,
+            train_token_ids=[tokenizer.convert_tokens_to_ids(t) for t in SPECIAL_TOKENS],
+            pretrained_model=shared_model,
+        ).to(device)
+        
+        X_train_dict, Y_train_ml, train_span_ml = extract_activations(
+            train_dl_ex, base, fusion_layers, "query", device, tokenizer
+        )
+        X_dev_dict, Y_dev_ml, dev_span_ml = extract_activations(
+            dev_dl_ex, base, fusion_layers, "query", device, tokenizer
+        )
+        base.teardown()
+        
+        print(f"\nTraining multi-layer probe...")
+        ml_result = train_multilayer_probe_from_cache(
+            mode="query",
+            layers=fusion_layers,
+            X_dict=X_train_dict,
+            Y_train=Y_train_ml,
+            X_dev_dict=X_dev_dict,
+            Y_dev=Y_dev_ml,
+            train_span_summary=train_span_ml,
+            dev_span_summary=dev_span_ml,
+            hidden_size=shared_model.config.hidden_size,
+            batch_size=args.batch_size,
+            epochs=args.epochs,
+            lr=args.lr,
+            seed=args.seed,
+            out_dir=multilayer_dir,
+            threshold=args.threshold,
+            eval_services=eval_services,
+            dev_rows_use=dev_rows,
+            no_tqdm=args.no_tqdm,
+            tqdm_mininterval=args.tqdm_mininterval,
+        )
+        
+        results["multilayer"] = ml_result
+        
+        # Update best_overall if multilayer is better
+        ml_score = get_score(ml_result["best"], score_metric)
+        print(f"\nMulti-layer Macro F1: {ml_score:.4f}")
+        
+        if best_overall is None or ml_score > float(best_overall["score"]):
+            best_overall = {
+                "score": float(ml_score),
+                "score_metric": score_metric,
+                "mode": "multilayer",
+                "layer_idx": None,
+                "layers": fusion_layers,
+                "best": ml_result["best"],
+            }
+            best_key = "multilayer"
+            results["best_overall"] = best_overall
+            results["best_overall_key"] = best_key
+            print(f"[NEW BEST] Multi-layer fusion!")
+        
+        print(f"\nLayer weights: {ml_result['best'].get('layer_weights', {})}")
+        print("="*60)
     
     (out_dir / "summary.json").write_text(
         json.dumps(results, ensure_ascii=False, indent=2),

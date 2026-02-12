@@ -1,201 +1,200 @@
 #!/usr/bin/env python3
 """
-実験結果を比較して、改善効果をレポートするスクリプト
+3つの実験結果（ベースライン、クラスごと閾値、マルチレイヤー）を比較分析するスクリプト
+
+summary.jsonを読み込み、F1スコアの改善度や閾値の変化、レイヤー重みなどを比較します。
 """
-import argparse
+
 import json
+import argparse
+import pandas as pd
+import numpy as np
 from pathlib import Path
-from typing import Dict, Any, List
+import matplotlib.pyplot as plt
+import seaborn as sns
+from typing import Dict, List, Any
 
+DIRS = ["who", "what", "when", "where", "why", "how", "which"]
 
-def load_summary(dir_path: Path) -> Dict[str, Any]:
-    """サマリJSONファイルを読み込む"""
-    summary_file = dir_path / "summary.json"
-    if not summary_file.exists():
-        # log.jsonlから最良結果を抽出
-        log_file = dir_path / "log.jsonl"
-        if not log_file.exists():
-            return {}
-        
-        best = None
-        with open(log_file, "r") as f:
-            for line in f:
-                record = json.loads(line)
-                if best is None or record.get("macro_f1_posonly", 0) > best.get("macro_f1_posonly", 0):
-                    best = record
-        return best or {}
-    
-    with open(summary_file, "r") as f:
+def load_summary(run_dir: str) -> Dict[str, Any]:
+    path = Path(run_dir) / "summary.json"
+    if not path.exists():
+        print(f"Warning: {path} not found")
+        return {}
+    with open(path, 'r') as f:
         return json.load(f)
 
-
-def extract_metrics(summary: Dict[str, Any]) -> Dict[str, float]:
-    """サマリから主要なメトリクスを抽出"""
+def extract_metrics(summary: Dict[str, Any], exp_type: str) -> Dict[str, Any]:
+    if not summary:
+        return {}
+    
     metrics = {}
     
-    # Macro F1 (positive only)
-    metrics["macro_f1_posonly"] = summary.get("macro_f1_posonly", 0.0)
+    # Best overall result
+    best = summary.get("best_overall", {})
+    if exp_type == "multilayer":
+        # summary.jsonの構造が少し異なる場合に対応
+        if "multilayer" in summary:
+            best = summary["multilayer"].get("best", {})
+            metrics["layer_weights"] = summary["multilayer"].get("best", {}).get("layer_weights", {})
+        elif "best" in summary:
+             best = summary["best"]
+             metrics["layer_weights"] = summary.get("layer_weights", {})
+    elif exp_type == "perclass":
+         # Per-class experiment usually has best_overall
+         if "best_overall" in summary:
+             best = summary["best_overall"].get("best", {}) # Nested best in best_overall?
+             # Actually scripts/03_train_probe.py structure:
+             # results["best_overall"] = {score, mode, layer_idx, best: {...}}
+             if "best" in summary["best_overall"]:
+                 best = summary["best_overall"]["best"]
+    else: # baseline
+         if "best_overall" in summary:
+             if "best" in summary["best_overall"]:
+                 best = summary["best_overall"]["best"]
+
+    metrics["macro_f1"] = best.get("macro_f1_posonly", 0.0)
+    metrics["per_label_f1"] = best.get("per_label_f1", [0]*len(DIRS))
+    metrics["thresholds"] = best.get("threshold_dict", {})
     
-    # Micro F1
-    metrics["micro_f1"] = summary.get("micro_f1", 0.0)
-    
-    # Per-class F1
-    per_class_tuned = summary.get("per_class_tuned", {})
-    f1_dict = per_class_tuned.get("f1_dict", {})
-    
-    if f1_dict:
-        metrics.update(f1_dict)
-    elif "per_label_f1" in summary:
-        # Fallback
-        dirs = ["who", "what", "when", "where", "why", "how", "which"]
-        per_label_f1 = summary["per_label_f1"]
-        for i, d in enumerate(dirs):
-            if i < len(per_label_f1):
-                metrics[d] = per_label_f1[i]
+    # Get optimal layer if available
+    if "best_overall" in summary:
+        metrics["best_layer"] = summary["best_overall"].get("layer_idx")
     
     return metrics
 
+def plot_comparison(results: Dict[str, Dict[str, Any]], out_dir: Path):
+    # 1. Macro F1 Comparison
+    f1_data = []
+    for name, res in results.items():
+        if res:
+            f1_data.append({"Experiment": name, "Macro F1": res["macro_f1"]})
+    
+    if f1_data:
+        df_f1 = pd.DataFrame(f1_data)
+        plt.figure(figsize=(10, 6))
+        sns.barplot(data=df_f1, x="Experiment", y="Macro F1")
+        plt.title("Macro F1 Score Comparison")
+        plt.ylim(0, 1.0)
+        for i, v in enumerate(df_f1["Macro F1"]):
+            plt.text(i, v + 0.02, f"{v:.4f}", ha='center')
+        plt.tight_layout()
+        plt.savefig(out_dir / "comparison_macro_f1.png")
+        plt.close()
 
-def calculate_improvement(baseline: float, improved: float) -> float:
-    """改善率を計算（パーセンテージ）"""
-    if baseline == 0:
-        return 0.0
-    return ((improved - baseline) / baseline) * 100
+    # 2. Per-Class F1 Comparison
+    class_data = []
+    for name, res in results.items():
+        if res and "per_label_f1" in res:
+            for i, label in enumerate(DIRS):
+                if i < len(res["per_label_f1"]):
+                    class_data.append({
+                        "Experiment": name,
+                        "Class": label,
+                        "F1 Score": res["per_label_f1"][i]
+                    })
+    
+    if class_data:
+        df_class = pd.DataFrame(class_data)
+        plt.figure(figsize=(12, 6))
+        sns.barplot(data=df_class, x="Class", y="F1 Score", hue="Experiment")
+        plt.title("Per-Class F1 Score Comparison")
+        plt.ylim(0, 1.0)
+        plt.tight_layout()
+        plt.savefig(out_dir / "comparison_per_class_f1.png")
+        plt.close()
 
+    # 3. Layer Weights (Multilayer only)
+    if "Multilayer" in results and "layer_weights" in results["Multilayer"]:
+        weights = results["Multilayer"]["layer_weights"]
+        if weights: # could be list or dict
+             if isinstance(weights, dict):
+                 # extract layer numbers
+                 w_data = [{"Layer": int(k.split('_')[-1]) if '_' in k else k, "Weight": v} for k, v in weights.items()]
+             elif isinstance(weights, list):
+                  # Assuming order matches experimentation
+                  pass # hard to know layer ids easily without more info
+                  w_data = [] 
 
-def generate_comparison_markdown(
-    baseline_metrics: Dict[str, float],
-    perclass_metrics: Dict[str, float],
-    multilayer_metrics: Dict[str, float] = None,
-) -> str:
-    """比較レポートをMarkdown形式で生成"""
-    
-    dirs = ["who", "what", "when", "where", "why", "how", "which"]
-    
-    md = "# プローブモデル精度改善の比較レポート\n\n"
-    
-    md += "## 概要\n\n"
-    md += "このレポートは、方向性不確定性プローブモデルの精度改善結果をまとめたものです。\n\n"
-    
-    md += "## 全体的なメトリクス\n\n"
-    md += "| メトリクス | ベースライン | クラスごと閾値 | 改善率 |\n"
-    md += "|-----------|------------|--------------|--------|\n"
-    
-    # Macro F1
-    baseline_macro = baseline_metrics.get("macro_f1_posonly", 0.0)
-    perclass_macro = perclass_metrics.get("macro_f1_posonly", 0.0)
-    improvement = calculate_improvement(baseline_macro, perclass_macro)
-    md += f"| Macro F1 (pos only) | {baseline_macro:.4f} | {perclass_macro:.4f} | {improvement:+.2f}% |\n"
-    
-    # Micro F1
-    baseline_micro = baseline_metrics.get("micro_f1", 0.0)
-    perclass_micro = perclass_metrics.get("micro_f1", 0.0)
-    improvement_micro = calculate_improvement(baseline_micro, perclass_micro)
-    md += f"| Micro F1 | {baseline_micro:.4f} | {perclass_micro:.4f} | {improvement_micro:+.2f}% |\n"
-    
-    md += "\n"
-    
-    md += "## クラスごとのF1スコア\n\n"
-    md += "| Direction | ベースライン | クラスごと閾値 | 改善率 |\n"
-    md += "|-----------|------------|--------------|--------|\n"
-    
-    for d in dirs:
-        baseline_f1 = baseline_metrics.get(d, 0.0)
-        perclass_f1 = perclass_metrics.get(d, 0.0)
-        improvement_d = calculate_improvement(baseline_f1, perclass_f1)
-        
-        md += f"| **{d}** | {baseline_f1:.4f} | {perclass_f1:.4f} | {improvement_d:+.2f}% |\n"
-    
-    md += "\n"
-    
-    md += "## サマリ\n\n"
-    
-    # Calculate average improvement
-    improvements = []
-    for d in dirs:
-        baseline_f1 = baseline_metrics.get(d, 0.0)
-        perclass_f1 = perclass_metrics.get(d, 0.0)
-        if baseline_f1 > 0:
-            improvements.append(calculate_improvement(baseline_f1, perclass_f1))
-    
-    avg_improvement = sum(improvements) / len(improvements) if improvements else 0.0
-    
-    md += f"- **全体的な改善**: Macro F1が {baseline_macro:.4f} から {perclass_macro:.4f} に向上（{improvement:+.2f}%）\n"
-    md += f"- **平均改善率**: {avg_improvement:+.2f}%\n"
-    
-    # Find best and worst improvements
-    class_improvements = {d: calculate_improvement(baseline_metrics.get(d, 0.0), perclass_metrics.get(d, 0.0)) 
-                          for d in dirs if baseline_metrics.get(d, 0.0) > 0}
-    
-    if class_improvements:
-        best_class = max(class_improvements, key=class_improvements.get)
-        worst_class = min(class_improvements, key=class_improvements.get)
-        
-        md += f"- **最も改善したクラス**: `{best_class}` ({class_improvements[best_class]:+.2f}%)\n"
-        md += f"- **最も改善が少ないクラス**: `{worst_class}` ({class_improvements[worst_class]:+.2f}%)\n"
-    
-    md += "\n"
-    
-    md += "## 結論\n\n"
-    if improvement > 0:
-        md += f"クラスごとの閾値最適化により、Macro F1スコアが **{improvement:.2f}%** 向上しました。\n"
-        md += "この改善は、各directional uncertaintyクラスに最適な予測閾値を設定することで達成されました。\n"
-    else:
-        md += "クラスごとの閾値最適化による顕著な改善は見られませんでした。\n"
-        md += "他の手法（マルチレイヤー結合、データ拡張等）の検討が必要です。\n"
-    
-    return md
-
+             if w_data:
+                 df_w = pd.DataFrame(w_data)
+                 # Sort by layer index if possible
+                 try:
+                     df_w["LayerInt"] = pd.to_numeric(df_w["Layer"])
+                     df_w = df_w.sort_values("LayerInt")
+                 except:
+                     pass
+                 
+                 plt.figure(figsize=(8, 5))
+                 sns.barplot(data=df_w, x="Layer", y="Weight")
+                 plt.title("Learned Layer Weights (Multilayer)")
+                 plt.tight_layout()
+                 plt.savefig(out_dir / "multilayer_weights.png")
+                 plt.close()
 
 def main():
-    parser = argparse.ArgumentParser(description="実験結果の比較レポート生成")
-    parser.add_argument("--baseline", type=str, required=True, help="ベースライン結果のディレクトリ")
-    parser.add_argument("--perclass", type=str, required=True, help="クラスごと閾値版のディレクトリ")
-    parser.add_argument("--multilayer", type=str, help="マルチレイヤー版のディレクトリ（オプション）")
-    parser.add_argument("--output", type=str, default="comparison_report.md", help="出力ファイル名")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--baseline", type=str, required=True)
+    parser.add_argument("--perclass", type=str, required=True)
+    parser.add_argument("--multilayer", type=str, required=True)
+    parser.add_argument("--out_dir", type=str, default="analysis_results/comparison")
     args = parser.parse_args()
     
-    baseline_dir = Path(args.baseline)
-    perclass_dir = Path(args.perclass)
-    
-    print(f"ベースライン: {baseline_dir}")
-    print(f"クラスごと閾値: {perclass_dir}")
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     
     # Load summaries
-    baseline_summary = load_summary(baseline_dir)
-    perclass_summary = load_summary(perclass_dir)
-    
-    print(f"ベースラインのメトリクス数: {len(baseline_summary)}")
-    print(f"クラスごと閾値のメトリクス数: {len(perclass_summary)}")
+    s_base = load_summary(args.baseline)
+    s_perc = load_summary(args.perclass)
+    s_multi = load_summary(args.multilayer)
     
     # Extract metrics
-    baseline_metrics = extract_metrics(baseline_summary)
-    perclass_metrics = extract_metrics(perclass_summary)
+    results = {
+        "Baseline": extract_metrics(s_base, "baseline"),
+        "Per-Class": extract_metrics(s_perc, "perclass"),
+        "Multilayer": extract_metrics(s_multi, "multilayer"),
+    }
     
-    print(f"\n抽出されたメトリクス:")
-    print(f"  ベースライン: {list(baseline_metrics.keys())}")
-    print(f"  クラスごと閾値: {list(perclass_metrics.keys())}")
+    # Print Text Report
+    report = []
+    report.append("# Experiment Comparison Report\n")
     
-    # Generate report
-    multilayer_metrics = None
-    if args.multilayer:
-        multilayer_dir = Path(args.multilayer)
-        multilayer_summary = load_summary(multilayer_dir)
-        multilayer_metrics = extract_metrics(multilayer_summary)
+    report.append("## 1. Macro F1 Scores")
+    for name, res in results.items():
+        if res:
+            report.append(f"- **{name}**: {res['macro_f1']:.4f}")
+            if "best_layer" in res and res["best_layer"] is not None:
+                report.append(f"  - Best Single Layer: {res['best_layer']}")
     
-    report = generate_comparison_markdown(baseline_metrics, perclass_metrics, multilayer_metrics)
-    
-    # Save report
-    output_path = Path(args.output)
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(report)
-    
-    print(f"\n比較レポートを生成しました: {output_path}")
-    print("\n" + "="*50)
-    print("レポートのプレビュー:")
-    print("="*50)
-    print(report[:500] + "...")
+    report.append("\n## 2. Improvements")
+    base_f1 = results["Baseline"].get("macro_f1", 0)
+    if base_f1 > 0:
+        if results["Per-Class"]:
+            imp = (results["Per-Class"]["macro_f1"] - base_f1) / base_f1 * 100
+            report.append(f"- Per-Class vs Baseline: **{imp:+.2f}%**")
+        if results["Multilayer"]:
+            imp = (results["Multilayer"]["macro_f1"] - base_f1) / base_f1 * 100
+            report.append(f"- Multilayer vs Baseline: **{imp:+.2f}%**")
+        if results["Per-Class"] and results["Multilayer"]:
+             perc_f1 = results["Per-Class"]["macro_f1"]
+             imp = (results["Multilayer"]["macro_f1"] - perc_f1) / perc_f1 * 100
+             report.append(f"- Multilayer vs Per-Class: **{imp:+.2f}%**")
 
+    report.append("\n## 3. Multilayer Weights")
+    if results["Multilayer"] and "layer_weights" in results["Multilayer"]:
+         w = results["Multilayer"]["layer_weights"]
+         report.append("Learned weights:")
+         if isinstance(w, dict):
+             for k, v in w.items():
+                 report.append(f"- {k}: {v:.4f}")
+    
+    report_text = "\n".join(report)
+    print(report_text)
+    (out_dir / "report.md").write_text(report_text)
+    
+    # Generate Plots
+    plot_comparison(results, out_dir)
+    print(f"\nAnalysis saved to {out_dir}")
 
 if __name__ == "__main__":
     main()
