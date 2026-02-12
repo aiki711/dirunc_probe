@@ -8,7 +8,7 @@ from collections import defaultdict
 import numpy as np
 import matplotlib.pyplot as plt
 
-DIRS = ["who", "what", "when", "where", "why", "how"]
+DIRS = ["who", "what", "when", "where", "why", "how", "which"]
 
 # ---------------- I/O ----------------
 
@@ -143,6 +143,18 @@ def extract_mode_layer_metrics(summary: dict):
         mode_to_layers[mode].add(layer)
 
     mode_to_layers = {m: sorted(list(s)) for m, s in mode_to_layers.items()}
+    
+    # Update DIRS from summary if possible
+    global DIRS
+    for k, v in summary.items():
+        if "/" in k:
+            m = get_best_metrics(v)
+            labels = m.get("macro_posonly_labels", [])
+            if labels and len(labels) > len(DIRS):
+                DIRS = labels
+                print(f"Updated DIRS from summary: {DIRS}")
+                break
+    
     return mode_to_layers, metrics
 
 def extract_best_blocks(summary: dict):
@@ -398,9 +410,13 @@ def extract_mode_layer_perlabel(summary: dict):
 def plot_B_per_label_f1_vs_layer(summary: dict, out_path: Path):
     all_layers, perlabel = extract_mode_layer_perlabel(summary)
     if not all_layers:
-        raise RuntimeError("No layer results found for per_label_f1 in summary.json")
+        print("Warning: No layer results found for per_label_f1 in summary.json. Skipping B3 plot.")
+        return
 
-    fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(14, 7), constrained_layout=True)
+    n_dirs = len(DIRS)
+    nrows = (n_dirs + 2) // 3
+    ncols = 3
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(14, 4 * nrows), constrained_layout=True)
     axes = axes.flatten()
 
     for i, d in enumerate(DIRS):
@@ -420,6 +436,10 @@ def plot_B_per_label_f1_vs_layer(summary: dict, out_path: Path):
         ax.set_ylim(0, 1.0)
         ax.grid(True, alpha=0.3)
         ax.legend()
+    
+    # 余った subplot を非表示にする
+    for j in range(i + 1, len(axes)):
+        axes[j].axis('off')
 
     fig.suptitle("baseline vs query: per-label F1 across layers", fontsize=14)
     fig.savefig(out_path, dpi=200)

@@ -1403,6 +1403,76 @@ def main() -> None:
     # Decide extraction batch size
     bs_extract = args.extract_batch_size if args.extract_batch_size > 0 else (args.batch_size * 4)
 
+    # --- ACTIVATION CACHE ---
+    # (mode, layer_idx) -> Tensor
+    cache_X_train: Dict[Tuple[str, int], torch.Tensor] = {}
+    cache_X_dev: Dict[Tuple[str, int], torch.Tensor] = {}
+    # mode -> Tensor/Summary
+    cache_Y_train: Dict[str, torch.Tensor] = {}
+    cache_Y_dev: Dict[str, torch.Tensor] = {}
+    cache_span_train: Dict[str, Any] = {}
+    cache_span_dev: Dict[str, Any] = {}
+
+    def get_activations_with_cache(mode: str, needed_layers: List[int], current_train_rows, current_dev_rows):
+        # すべて既にあるかチェック
+        missing = [l for l in needed_layers if (mode, l) not in cache_X_train]
+        
+        if missing or mode not in cache_Y_train:
+            # まだ抽出していない層がある場合のみ LLM を回す
+            # 効率化のため、multilayer用の層も初回にまとめて抽出対象に加える
+            all_to_extract = set(missing)
+            if mode == "query" and args.multilayer:
+                ml_layers = [int(x.strip()) for x in args.fusion_layers.split(",")]
+                for ml_l in ml_layers:
+                    if (mode, ml_l) not in cache_X_train:
+                        all_to_extract.add(ml_l)
+            
+            to_extract_list = sorted(list(all_to_extract))
+            
+            if to_extract_list:
+                print(f"[{mode}] Cache MISS. Extracting NEW layers: {to_extract_list}", flush=True)
+                
+                # Check if we need to wrap the model
+                local_base = ProbeModelBase(
+                    args.model_name,
+                    vocab_size=None,
+                    train_token_ids=[tokenizer.convert_tokens_to_ids(t) for t in SPECIAL_TOKENS],
+                    pretrained_model=shared_model,
+                ).to(device)
+
+                # Prepare loaders
+                ds_tr = JsonlDirUncDataset(current_train_rows, fs)
+                ds_dv = JsonlDirUncDataset(current_dev_rows, fs)
+                dl_tr = DataLoader(ds_tr, batch_size=bs_extract, shuffle=False, 
+                                   collate_fn=lambda b: collate_batch(tokenizer, b, args.max_length))
+                dl_dv = DataLoader(ds_dv, batch_size=bs_extract, shuffle=False,
+                                   collate_fn=lambda b: collate_batch(tokenizer, b, args.max_length))
+
+                new_X_tr, new_Y_tr, new_span_tr = extract_activations(dl_tr, local_base, to_extract_list, mode, device, tokenizer)
+                new_X_dv, new_Y_dv, new_span_dv = extract_activations(dl_dv, local_base, to_extract_list, mode, device, tokenizer)
+                
+                # Update cache
+                for l in to_extract_list:
+                    cache_X_train[(mode, l)] = new_X_tr[l]
+                    cache_X_dev[(mode, l)] = new_X_dv[l]
+                
+                if mode not in cache_Y_train:
+                    cache_Y_train[mode] = new_Y_tr
+                    cache_Y_dev[mode] = new_Y_dv
+                    cache_span_train[mode] = new_span_tr
+                    cache_span_dev[mode] = new_span_dv
+                
+                local_base.teardown()
+                del local_base
+                torch.cuda.empty_cache()
+            else:
+                print(f"[{mode}] Cache HIT for required layers.", flush=True)
+
+        # 必要な分を返却（呼び出し側の期待する形式）
+        ret_X_tr = {l: cache_X_train[(mode, l)] for l in needed_layers}
+        ret_X_dv = {l: cache_X_dev[(mode, l)] for l in needed_layers}
+        return ret_X_tr, ret_X_dv, cache_Y_train[mode], cache_Y_dev[mode], cache_span_train[mode], cache_span_dev[mode]
+
     for mode in modes:
         mode_dir = out_dir / mode
         safe_mkdir(mode_dir)
@@ -1415,37 +1485,16 @@ def main() -> None:
             "best_path": None,
         }
         
-        # --- PREPARE DATA LOADER FOR EXTRACTION ---
+        # --- PREPARE DATA ---
         train_rows_use, dev_rows_use = train_rows, dev_rows
         if mode == "baseline" and args.strip_query_in_baseline:
              train_rows_use = [{"text": strip_query_tokens(r["text"]), **{k:v for k,v in r.items() if k!="text"}} for r in train_rows]
              dev_rows_use = [{"text": strip_query_tokens(r["text"]), **{k:v for k,v in r.items() if k!="text"}} for r in dev_rows]
 
-        train_ds_ex = JsonlDirUncDataset(train_rows_use, fs)
-        dev_ds_ex = JsonlDirUncDataset(dev_rows_use, fs)
-        
-        train_dl_ex = DataLoader(train_ds_ex, batch_size=bs_extract, shuffle=False, 
-                                 collate_fn=lambda b: collate_batch(tokenizer, b, args.max_length), num_workers=0)
-        dev_dl_ex = DataLoader(dev_ds_ex, batch_size=bs_extract, shuffle=False,
-                               collate_fn=lambda b: collate_batch(tokenizer, b, args.max_length), num_workers=0)
-
-        # --- MULTI-LAYER EXTRACTION ---
-        print(f"[{mode}] Extracting activations for layers {layers} with BS={bs_extract}...", flush=True)
-        
-        # Wrap model
-        base = ProbeModelBase(
-            args.model_name,
-            vocab_size=None,
-            train_token_ids=[tokenizer.convert_tokens_to_ids(t) for t in SPECIAL_TOKENS],
-            pretrained_model=shared_model,
-        ).to(device)
-
-        X_train_dict, Y_train, train_span = extract_activations(train_dl_ex, base, layers, mode, device, tokenizer)
-        X_dev_dict, Y_dev, dev_span = extract_activations(dev_dl_ex, base, layers, mode, device, tokenizer)
-        
-        base.teardown() # detach hooks
-        del base        # free structure
-        torch.cuda.empty_cache()
+        # --- EXTRACTION (with cache) ---
+        X_train_dict, X_dev_dict, Y_train, Y_dev, train_span, dev_span = get_activations_with_cache(
+            mode, layers, train_rows_use, dev_rows_use
+        )
 
         # ---- base sweep (layers) ----
         for layer_idx in layers:
@@ -1478,13 +1527,11 @@ def main() -> None:
                 tqdm_mininterval=args.tqdm_mininterval,
             )
             
-            # --- Result Handling (Same as before) ---
+            # --- Result Handling ---
             key = f"{mode}/layer_{layer_idx}"
             results[key] = res
-    
             score = get_score(res["best"], primary=score_metric)
     
-            # update mode best
             if score > float(mode_best["score"]):
                 mode_best = {
                     "score": float(score),
@@ -1494,7 +1541,6 @@ def main() -> None:
                     "best_path": res["best_path"],
                 }
     
-            # update global best
             if best_overall is None or score > float(best_overall["score"]):
                 best_overall = {
                     "score": float(score),
@@ -1512,31 +1558,17 @@ def main() -> None:
             best_l = int(mode_best["layer_idx"])
             refine_layers = expand_best_pm2(best_l, num_layers)
             
-            # Filter ones we haven't done
             needed = [l for l in refine_layers if l not in layers]
-            
             if needed:
-                print(f"[{mode}] Refine: Extracting layers {needed}...", flush=True)
-                # Re-extract only needed
-                base = ProbeModelBase(
-                    args.model_name,
-                    vocab_size=None,
-                    train_token_ids=[tokenizer.convert_tokens_to_ids(t) for t in SPECIAL_TOKENS],
-                    pretrained_model=shared_model,
-                ).to(device)
-                
-                rx_tr, ry_tr, rspan_tr = extract_activations(train_dl_ex, base, needed, mode, device, tokenizer)
-                rx_dv, ry_dv, rspan_dv = extract_activations(dev_dl_ex, base, needed, mode, device, tokenizer)
-                base.teardown()
+                rx_tr, rx_dv, ry_tr, ry_dv, rspan_tr, rspan_dv = get_activations_with_cache(
+                    mode, refine_layers, train_rows_use, dev_rows_use
+                )
                 
                 results[f"{mode}/refine_layers"] = refine_layers
-                
-                # Iterate all refine layers
                 for layer_idx in refine_layers:
                     if layer_idx in layers:
-                        pass # already in results, skipped
+                        pass 
                     else:
-                        # Process newly extracted
                         layer_dir = mode_dir / f"layer_{layer_idx}"
                         safe_mkdir(layer_dir)
                         
@@ -1544,7 +1576,7 @@ def main() -> None:
                             mode=mode,
                             layer_idx=layer_idx,
                             X_train=rx_tr[layer_idx],
-                            Y_train=ry_tr, # same labels
+                            Y_train=ry_tr,
                             X_dev=rx_dv[layer_idx],
                             Y_dev=ry_dv,
                             train_span_summary=rspan_tr,
@@ -1564,11 +1596,9 @@ def main() -> None:
                         
                         key = f"{mode}/layer_{layer_idx}"
                         results[key] = res
-            
                         score = get_score(res["best"], primary=score_metric)
             
                         if score > float(mode_best["score"]):
-                             # update best...
                              mode_best = { 
                                  "score": float(score), "layer_idx": int(layer_idx), 
                                  "score_metric": score_metric, "best": res["best"], "best_path": res["best_path"]
@@ -1589,29 +1619,14 @@ def main() -> None:
         print("\n" + "="*60)
         print("Multi-Layer Feature Fusion")
         print("="*60)
-        
         fusion_layers = [int(x.strip()) for x in args.fusion_layers.split(",")]
-        print(f"Fusion layers: {fusion_layers}")
-        
         multilayer_dir = out_dir / "multilayer"
         safe_mkdir(multilayer_dir)
         
-        # Extract features for fusion layers
-        print(f"\nExtracting features for {len(fusion_layers)} layers...", flush=True)
-        base = ProbeModelBase(
-            args.model_name,
-            vocab_size=None,
-            train_token_ids=[tokenizer.convert_tokens_to_ids(t) for t in SPECIAL_TOKENS],
-            pretrained_model=shared_model,
-        ).to(device)
-        
-        X_train_dict, Y_train_ml, train_span_ml = extract_activations(
-            train_dl_ex, base, fusion_layers, "query", device, tokenizer
+        # Use cache (mode will be "query" normally)
+        X_train_dict, X_dev_dict, Y_train_ml, Y_dev_ml, train_span_ml, dev_span_ml = get_activations_with_cache(
+            "query", fusion_layers, train_rows, dev_rows
         )
-        X_dev_dict, Y_dev_ml, dev_span_ml = extract_activations(
-            dev_dl_ex, base, fusion_layers, "query", device, tokenizer
-        )
-        base.teardown()
         
         print(f"\nTraining multi-layer probe...")
         ml_result = train_multilayer_probe_from_cache(

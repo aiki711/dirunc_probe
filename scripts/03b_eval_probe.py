@@ -25,7 +25,7 @@ ProbeModelBase = train_probe.ProbeModelBase
 extract_activations = train_probe.extract_activations
 evaluate_cached = train_probe.evaluate_cached
 JsonlDirUncDataset = train_probe.JsonlDirUncDataset
-FilterSetting = train_probe.FilterSetting
+FilterSpec = train_probe.FilterSpec
 collate_batch = train_probe.collate_batch
 strip_query_tokens = train_probe.strip_query_tokens
 
@@ -64,7 +64,7 @@ def main():
     if args.strip_query:
         rows = [{"text": strip_query_tokens(r["text"]), **{k:v for k,v in r.items() if k!="text"}} for r in rows]
     
-    fs = FilterSetting(None, None, None)
+    fs = FilterSpec(None, None, None)
     ds = JsonlDirUncDataset(rows, fs)
     dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, 
                     collate_fn=lambda b: collate_batch(tokenizer, b, args.max_length))
