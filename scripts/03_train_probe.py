@@ -473,6 +473,69 @@ class MultiLayerQueryHead(nn.Module):
         """現在のレイヤー重みを取得"""
         return self.layer_weights.get_weights()
 
+# ========== Sampling Utilities ==========
+
+def balanced_sampling(rows: List[Dict[str, Any]], target_count: int, seed: int = 42) -> List[Dict[str, Any]]:
+    """
+    Perform balanced sampling across 7 labels (DIRS) and a negative (all-zero) class.
+    Each of the 8 categories will aim for target_count // 8 samples.
+    """
+    if not rows:
+        return []
+    if target_count <= 0 or target_count >= len(rows):
+        return rows
+
+    rng = random.Random(seed)
+    # Buckets for each label + negative
+    buckets: Dict[str, List[Dict[str, Any]]] = {d: [] for d in DIRS}
+    buckets["negative"] = []
+
+    for r in rows:
+        lbls = r.get("labels", {})
+        pos_labels = [d for d in DIRS if lbls.get(d, 0) == 1]
+        
+        if not pos_labels:
+            buckets["negative"].append(r)
+        else:
+            # If multi-label, assign to a random one of its labels to maintain balance
+            chosen = rng.choice(pos_labels)
+            buckets[chosen].append(r)
+
+    total_categories = len(DIRS) + 1
+    per_bucket_target = target_count // total_categories
+    
+    selected_rows = []
+    remaining_count = target_count
+    
+    # First pass: take up to per_bucket_target from each
+    bucket_keys = list(buckets.keys())
+    rng.shuffle(bucket_keys) # Randomize order for leftover filling
+    
+    actual_taken = {}
+    for k in bucket_keys:
+        pool = buckets[k]
+        take = min(len(pool), per_bucket_target)
+        actual_taken[k] = take
+        selected_rows.extend(rng.sample(pool, take))
+        remaining_count -= take
+        
+    # Second pass: fill remaining from any available
+    if remaining_count > 0:
+        leftover_pool = []
+        for k in bucket_keys:
+            pool = buckets[k]
+            taken = actual_taken[k]
+            leftover_pool.extend(pool[taken:])
+            
+        if len(leftover_pool) > remaining_count:
+            selected_rows.extend(rng.sample(leftover_pool, remaining_count))
+        else:
+            selected_rows.extend(leftover_pool)
+            
+    print(f"Balanced Sampling: target={target_count}, selected={len(selected_rows)}")
+    rng.shuffle(selected_rows)
+    return selected_rows
+
 @torch.no_grad()
 def extract_activations(
     dl: DataLoader,
@@ -482,6 +545,8 @@ def extract_activations(
     device: torch.device,
     tokenizer: Any = None,
     save_dir: Optional[Path] = None,
+    no_tqdm: bool = False,
+    tqdm_mininterval: float = 5.0,
 ) -> Tuple[Union[Dict[int, torch.Tensor], Dict[int, Path]], Union[torch.Tensor, Path], Optional[Dict[str, Any]]]:
     base_model.lm.eval()
     
@@ -507,8 +572,13 @@ def extract_activations(
     print(f"DEBUG: Starting extraction loop. Device={device}, DL length={len(dl)}", flush=True)
 
     batch_count = 0
-    for batch in tqdm(dl, desc="Extracting"):
+    tqdm_obj = tqdm(dl, desc="Extracting", disable=no_tqdm, mininterval=30.0) # 30秒間隔に緩和
+    for batch in tqdm_obj:
         batch_count += 1
+        # 100バッチごとに明示的に一行出力 (ログ用)
+        if batch_count % 100 == 0 or batch_count == 1 or batch_count == len(dl):
+            print(f"[{mode}] Extraction progress: {batch_count}/{len(dl)} batches", flush=True)
+            
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         y = batch["y"].to(device)
@@ -1273,6 +1343,7 @@ def main() -> None:
     ap.add_argument("--eval_services", type=str, default="",
                 help="Comma-separated services to report per-service dev metrics, e.g., 'Flights_3,RideSharing_1'")
     ap.add_argument("--limit", type=str, default="0", help="Limit train/dev size. Usage: 'train=100,dev=100' or just '100'")
+    ap.add_argument("--balance_sampling", action="store_true", help="If limit is set, use balanced sampling across classes.")
     args = ap.parse_args()
 
     set_seed(args.seed)
@@ -1281,15 +1352,16 @@ def main() -> None:
     limit_train = 0
     limit_dev = 0
     if args.limit:
-        if "," in args.limit:
-            parts = args.limit.split(",")
-            for p in parts:
+        parts = args.limit.split(",")
+        for p in parts:
+            if "=" in p:
                 k, v = p.split("=")
                 if k == "train": limit_train = int(v)
                 if k == "dev": limit_dev = int(v)
-        else:
-            limit_train = int(args.limit)
-            limit_dev = int(args.limit)
+            else:
+                # If no '=', assume it's for both (legacy behavior)
+                limit_train = int(p)
+                limit_dev = int(p)
 
     # Load Train Data
     data_dir = Path(args.data_dir)
@@ -1297,7 +1369,10 @@ def main() -> None:
     train_rows = read_jsonl(data_dir / args.train_file)
     if limit_train > 0:
         print(f"Limiting train rows to {limit_train}")
-        train_rows = train_rows[:limit_train]
+        if args.balance_sampling:
+            train_rows = balanced_sampling(train_rows, limit_train, args.seed)
+        else:
+            train_rows = train_rows[:limit_train]
     
     # Few-shot Mixing
     if args.few_shot_data_dir and args.few_shot_count > 0:
@@ -1322,7 +1397,10 @@ def main() -> None:
         
     if limit_dev > 0:
         print(f"Limiting dev rows to {limit_dev}")
-        dev_rows = dev_rows[:limit_dev]
+        if args.balance_sampling:
+            dev_rows = balanced_sampling(dev_rows, limit_dev, args.seed)
+        else:
+            dev_rows = dev_rows[:limit_dev]
 
 
     eval_services = parse_str_list(args.eval_services)
@@ -1448,17 +1526,17 @@ def main() -> None:
                 dl_dv = DataLoader(ds_dv, batch_size=bs_extract, shuffle=False,
                                    collate_fn=lambda b: collate_batch(tokenizer, b, args.max_length))
 
-                new_X_tr, new_Y_tr, new_span_tr = extract_activations(dl_tr, local_base, to_extract_list, mode, device, tokenizer)
-                new_X_dv, new_Y_dv, new_span_dv = extract_activations(dl_dv, local_base, to_extract_list, mode, device, tokenizer)
+                new_X_tr, new_Y_tr, new_span_tr = extract_activations(dl_tr, local_base, to_extract_list, mode, device, tokenizer, no_tqdm=args.no_tqdm, tqdm_mininterval=args.tqdm_mininterval)
+                new_X_dv, new_Y_dv, new_span_dv = extract_activations(dl_dv, local_base, to_extract_list, mode, device, tokenizer, no_tqdm=args.no_tqdm, tqdm_mininterval=args.tqdm_mininterval)
                 
-                # Update cache
+                # Update cache (MOVE TO CPU TO SAVE VRAM)
                 for l in to_extract_list:
-                    cache_X_train[(mode, l)] = new_X_tr[l]
-                    cache_X_dev[(mode, l)] = new_X_dv[l]
+                    cache_X_train[(mode, l)] = new_X_tr[l].cpu()
+                    cache_X_dev[(mode, l)] = new_X_dv[l].cpu()
                 
                 if mode not in cache_Y_train:
-                    cache_Y_train[mode] = new_Y_tr
-                    cache_Y_dev[mode] = new_Y_dv
+                    cache_Y_train[mode] = new_Y_tr.cpu()
+                    cache_Y_dev[mode] = new_Y_dv.cpu()
                     cache_span_train[mode] = new_span_tr
                     cache_span_dev[mode] = new_span_dv
                 
@@ -1508,10 +1586,10 @@ def main() -> None:
             res = train_probe_from_cache(
                 mode=mode,
                 layer_idx=layer_idx,
-                X_train=X_tr,
-                Y_train=Y_train,
-                X_dev=X_dv,
-                Y_dev=Y_dev,
+                X_train=X_tr.to(device),
+                Y_train=Y_train.to(device),
+                X_dev=X_dv.to(device),
+                Y_dev=Y_dev.to(device),
                 train_span_summary=train_span,
                 dev_span_summary=dev_span,
                 hidden_size=int(shared_model.config.hidden_size),
@@ -1617,6 +1695,17 @@ def main() -> None:
     # ========== Multi-layer fusion ==========
     if args.multilayer:
         print("\n" + "="*60)
+        print("Freeing up memory for Multilayer Fusion...", flush=True)
+        # Delete base model to save VRAM for all-layer activations
+        if 'shared_model' in locals():
+            del shared_model
+        if 'base' in locals(): # Just in case it leaked
+            del base
+        torch.cuda.empty_cache()
+        print(f"Memory freed. Current allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+
+        print("Multi-Layer Feature Fusion")
+        print("\n" + "="*60)
         print("Multi-Layer Feature Fusion")
         print("="*60)
         fusion_layers = [int(x.strip()) for x in args.fusion_layers.split(",")]
@@ -1629,13 +1718,17 @@ def main() -> None:
         )
         
         print(f"\nTraining multi-layer probe...")
+        # Prepare multi-layer X on GPU
+        X_tr_gpu = {l: t.to(device) for l, t in X_train_dict.items()}
+        X_dv_gpu = {l: t.to(device) for l, t in X_dev_dict.items()}
+
         ml_result = train_multilayer_probe_from_cache(
             mode="query",
             layers=fusion_layers,
-            X_dict=X_train_dict,
-            Y_train=Y_train_ml,
-            X_dev_dict=X_dev_dict,
-            Y_dev=Y_dev_ml,
+            X_dict=X_tr_gpu,
+            Y_train=Y_train_ml.to(device),
+            X_dev_dict=X_dv_gpu,
+            Y_dev=Y_dev_ml.to(device),
             train_span_summary=train_span_ml,
             dev_span_summary=dev_span_ml,
             hidden_size=shared_model.config.hidden_size,

@@ -24,6 +24,7 @@ spec.loader.exec_module(mod_03)
 ProbeModelBase = mod_03.ProbeModelBase
 QueryHead = mod_03.QueryHead
 BaselineHead = mod_03.BaselineHead
+MultiLayerQueryHead = getattr(mod_03, "MultiLayerQueryHead", None) # if exists
 SPECIAL_TOKENS = mod_03.SPECIAL_TOKENS
 DIRS = mod_03.DIRS
 extract_activations = mod_03.extract_activations
@@ -56,7 +57,7 @@ def plot_cosine_sim(weight_matrix: torch.Tensor, out_path: Path):
 
 def analyze_gap(
     model_name: str,
-    layer_idx: int,
+    layer_idx: any, # int or list of int
     probe_state: dict,
     mode: str,
     dev_rows: list,
@@ -83,9 +84,14 @@ def analyze_gap(
     
     if mode == "baseline":
         head = BaselineHead(hidden_size, len(DIRS), dtype).to(device)
-    else:
+    elif mode == "query":
         head = QueryHead(hidden_size, len(DIRS), dtype).to(device)
-    
+    elif mode == "multilayer":
+        num_fusion_layers = len(layer_idx)
+        head = MultiLayerQueryHead(hidden_size, num_fusion_layers, len(DIRS), dtype).to(device)
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
     head.load_state_dict(probe_state)
     head.eval()
     
@@ -110,53 +116,66 @@ def analyze_gap(
     
     all_probs = []
     
-    # Token ID map for query mode (needed for extraction logic)
-    token_id_map = {}
-    if mode == "query":
-        from train_probe_03 import QUERY_LABEL_STR
-        for d, tstr in QUERY_LABEL_STR.items():
-            token_id_map[d] = tokenizer.convert_tokens_to_ids(tstr)
-
     with torch.no_grad():
         for batch in tqdm(dl, desc="Inference"):
             input_ids = batch["input_ids"].to(device)
             attn_mask = batch["attention_mask"].to(device)
             out = base_model.lm(input_ids=input_ids, attention_mask=attn_mask)
-            hs = base_model.get_layer_hidden(out.hidden_states, layer_idx)
             
-            # Feature extraction
-            if mode == "baseline":
-                lengths = attn_mask.long().sum(dim=1) - 1
-                features = hs[torch.arange(input_ids.size(0)), lengths]
-            else: # query
-                feats = []
-                for i in range(input_ids.size(0)):
-                    ids = input_ids[i].tolist()
-                    vecs = []
+            if mode == "multilayer":
+                # layers list extraction
+                layer_list = layer_idx
+                layer_states = []
+                for L in layer_list:
+                    hs_l = base_model.get_layer_hidden(out.hidden_states, L)
                     # For query model, we need vectors for each direction
-                    # Re-implementing simplified extraction logic from 03
-                    # (assuming logic is same as extract_activations)
-                    # Let's hope extract_activations is importable or I duplicate logic.
-                    # Duplicating logic here for safety as import is tricky with partial func
-                    valid_mask = attn_mask[i] > 0
-                    valid_ids = input_ids[i][valid_mask].tolist()
-                    valid_hs = hs[i][valid_mask]
-                    
-                    found_vecs = []
-                    for d in DIRS:
-                        tid = token_id_map[d]
-                        # Find last occurrence
-                        pos = -1
-                        for j in range(len(valid_ids)-1, -1, -1):
-                            if valid_ids[j] == tid:
-                                pos = j
-                                break
-                        if pos != -1:
-                            found_vecs.append(valid_hs[pos])
-                        else:
-                            found_vecs.append(valid_hs[-1]) # Fallback
-                    feats.append(torch.stack(found_vecs))
-                features = torch.stack(feats) # (B, 6, H)
+                    feats = []
+                    for i in range(input_ids.size(0)):
+                        valid_mask = attn_mask[i] > 0
+                        valid_ids = input_ids[i][valid_mask].tolist()
+                        valid_hs = hs_l[i][valid_mask]
+                        found_vecs = []
+                        for d in DIRS:
+                            tid = token_id_map[d]
+                            pos = -1
+                            for j in range(len(valid_ids)-1, -1, -1):
+                                if valid_ids[j] == tid:
+                                    pos = j
+                                    break
+                            if pos != -1:
+                                found_vecs.append(valid_hs[pos])
+                            else:
+                                found_vecs.append(valid_hs[-1])
+                        feats.append(torch.stack(found_vecs))
+                    layer_states.append(torch.stack(feats))
+                # features: (B, num_layers, 6, H)
+                features = torch.stack(layer_states, dim=1)
+            else:
+                # single layer extraction
+                hs = base_model.get_layer_hidden(out.hidden_states, layer_idx)
+                if mode == "baseline":
+                    lengths = attn_mask.long().sum(dim=1) - 1
+                    features = hs[torch.arange(input_ids.size(0)), lengths]
+                else: # query
+                    feats = []
+                    for i in range(input_ids.size(0)):
+                        valid_mask = attn_mask[i] > 0
+                        valid_ids = input_ids[i][valid_mask].tolist()
+                        valid_hs = hs[i][valid_mask]
+                        found_vecs = []
+                        for d in DIRS:
+                            tid = token_id_map[d]
+                            pos = -1
+                            for j in range(len(valid_ids)-1, -1, -1):
+                                if valid_ids[j] == tid:
+                                    pos = j
+                                    break
+                            if pos != -1:
+                                found_vecs.append(valid_hs[pos])
+                            else:
+                                found_vecs.append(valid_hs[-1])
+                        feats.append(torch.stack(found_vecs))
+                    features = torch.stack(feats) # (B, 6, H)
 
             logits = head(features)
             probs = torch.sigmoid(logits) # (B, 6)
@@ -254,9 +273,16 @@ def main():
     dev_rows = load_jsonl(Path(args.dev_jsonl))
     
     for key in targets:
-        # key example: "query/layer_25"
-        mode, layer_str = key.split("/")
-        layer_idx = int(layer_str.replace("layer_", ""))
+        # key example: "query/layer_25" or "multilayer"
+        if key == "multilayer":
+            mode = "multilayer"
+            layer_idx = summary.get("multilayer", {}).get("layers", [10, 15, 20, 25])
+        elif "/" in key:
+            mode, layer_str = key.split("/")
+            layer_idx = int(layer_str.replace("layer_", ""))
+        else:
+            print(f"[Analysis] Skipping non-layer key: {key}")
+            continue
         
         info = summary[key]
         best_path = info.get("best_path")
@@ -268,37 +294,38 @@ def main():
             continue
             
         # Fix path absolute/relative
-        # best_path in summary is often relative to project root
-        bp = Path(best_path)
+        # best_path in summary might be relative to the original project root
+        # We try to resolve it relative to the summary.json directory first
+        bp = summary_path.parent / Path(best_path).name 
         if not bp.exists():
-            bp = summary_path.parent.parent.parent / best_path # Try to resolve from runs/
-            if not bp.exists():
-                 # Try relative to summary's dir (runs/run_x/)
-                 bp = summary_path.parent / Path(best_path).name # if in same folder structure
-                 # Actually summary says: "runs/run.../best...pt"
-                 # So if we run from project root it works.
-                 # If bp doesn't exist, check project root
-                 bp = Path.cwd() / best_path
+            # Try deeper search in subdirs
+            potential_paths = list(summary_path.parent.glob(f"**/{Path(best_path).name}"))
+            if potential_paths:
+                bp = potential_paths[0]
+            else:
+                bp = Path(best_path)
         
         if not bp.exists():
-             print(f"[Error] Checkpoint not found: {best_path}")
+             print(f"[Error] Checkpoint not found: {best_path} (resolved to {bp})")
              continue
              
         print(f"Loading {bp}...")
         state = torch.load(bp, map_location=device)
         
-        # 1. Cosine Sim
-        if mode == "query":
-            # For query head, weights are W (6, H)
-            # state keys: W, b
+        # 1. Weights / Cosine Sim
+        if mode == "multilayer":
+            # State for MultiLayerQueryHead: layer_weights.weights, W, b
+            if "layer_weights.weights" in state:
+                w_vec = torch.softmax(state["layer_weights.weights"], dim=0).detach().cpu().numpy()
+                print(f"[Analysis] Layer Weights (normalized): {w_vec}")
             if "W" in state:
-                W = state["W"]
-                plot_cosine_sim(W, out_dir / f"cosine_sim_{mode}_layer{layer_idx}.png")
+                plot_cosine_sim(state["W"], out_dir / f"cosine_sim_{mode}_fused.png")
+        elif mode == "query":
+            if "W" in state:
+                plot_cosine_sim(state["W"], out_dir / f"cosine_sim_{mode}_layer{layer_idx}.png")
         elif mode == "baseline":
-            # For baseline, weights are linear.weight (6, H)
             if "linear.weight" in state:
-                W = state["linear.weight"]
-                plot_cosine_sim(W, out_dir / f"cosine_sim_{mode}_layer{layer_idx}.png")
+                plot_cosine_sim(state["linear.weight"], out_dir / f"cosine_sim_{mode}_layer{layer_idx}.png")
                 
         # 2. Contrastive Gap
         analyze_gap(model_name, layer_idx, state, mode, dev_rows, out_dir, device)

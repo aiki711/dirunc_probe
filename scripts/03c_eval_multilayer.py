@@ -2,15 +2,13 @@ import torch
 import json
 import argparse
 from pathlib import Path
-from tqdm import tqdm
 from typing import Dict, List, Any, Optional
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, AutoModel
-from sklearn.metrics import f1_score, precision_recall_fscore_support
-
-from common import DIRS, SPECIAL_TOKENS, QUERY_LABEL_STR
 import importlib.util
 import sys
+
+from common import DIRS, SPECIAL_TOKENS, QUERY_LABEL_STR
 
 def load_03_train_probe():
     path = Path(__file__).parent / "03_train_probe.py"
@@ -22,32 +20,30 @@ def load_03_train_probe():
 
 train_probe = load_03_train_probe()
 ProbeModelBase = train_probe.ProbeModelBase
+MultiLayerQueryHead = train_probe.MultiLayerQueryHead
 extract_activations = train_probe.extract_activations
 evaluate_cached = train_probe.evaluate_cached
 JsonlDirUncDataset = train_probe.JsonlDirUncDataset
 FilterSpec = train_probe.FilterSpec
 collate_batch = train_probe.collate_batch
-strip_query_tokens = train_probe.strip_query_tokens
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="google/gemma-2-2b-it")
-    parser.add_argument("--data_jsonl", type=str, required=True, help="Evaluation dataset (e.g. dev_balanced.jsonl)")
-    parser.add_argument("--model_path", type=str, required=True, help="Path to trained probe .pt file")
+    parser.add_argument("--model_name", type=str, default="google/gemma-2-9b")
+    parser.add_argument("--data_jsonl", type=str, required=True)
+    parser.add_argument("--model_path", type=str, required=True)
     parser.add_argument("--out_dir", type=str, required=True)
-    parser.add_argument("--layer_idx", type=int, required=True)
-    parser.add_argument("--mode", type=str, default="query", choices=["baseline", "query"])
+    parser.add_argument("--layers", type=str, default="10,15,20,25")
     parser.add_argument("--max_length", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--threshold", type=float, default=None, help="If None, uses 0.5 (or per-class best from summary)")
-    parser.add_argument("--summary_json", type=str, default=None, help="If provided, loads optimized thresholds")
-    parser.add_argument("--strip_query", action="store_true")
+    parser.add_argument("--summary_json", type=str, default=None)
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    layers = [int(l) for l in args.layers.split(",")]
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     tokenizer.add_tokens(SPECIAL_TOKENS)
     
@@ -57,10 +53,14 @@ def main():
     shared_model.to(device)
     shared_model.eval()
 
-    # Prepare dataset
+    print(f"Loading dataset from {args.data_jsonl}...")
     with open(args.data_jsonl, "r") as f:
         rows = [json.loads(line) for line in f]
-
+    
+    fs = FilterSpec(None, None, None)
+    ds = JsonlDirUncDataset(rows, fs)
+    dataset = ds
+    
     # === Experiment Configuration Print ===
     print(f"\n{'='*40}")
     print(f" Experiment Configuration")
@@ -71,20 +71,14 @@ def main():
     print(f"Model Name: {args.model_name}")
     print(f"Model Path: {args.model_path}")
     print(f"Output Directory: {args.out_dir}")
-    print(f"Target Layer: {args.layer_idx}")
-    print(f"Mode: {args.mode}")
+    print(f"Target Layers: {args.layers}")
     print(f"Dataset Path: {args.data_jsonl}")
     print(f"Dataset Size (rows): {len(rows)}")
     print(f"Batch Size: {args.batch_size}")
     print(f"{'='*40}\n")
     # ======================================
-    
-    if args.strip_query:
-        rows = [{"text": strip_query_tokens(r["text"]), **{k:v for k,v in r.items() if k!="text"}} for r in rows]
-    
-    fs = FilterSpec(None, None, None)
-    ds = JsonlDirUncDataset(rows, fs)
-    dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, 
+
+    dl = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, 
                     collate_fn=lambda b: collate_batch(tokenizer, b, args.max_length))
 
     # Wrap model
@@ -96,47 +90,47 @@ def main():
     ).to(device)
 
     # Extract activations
-    print(f"Extracting activations for layer {args.layer_idx}...")
-    X_dict, Y, _ = extract_activations(dl, base, [args.layer_idx], args.mode, device, tokenizer)
-    X = X_dict[args.layer_idx]
+    print(f"Extracting activations for layers {layers}...")
+    # extract_activations returns X_dict: {layer_idx: tensor(N, C, H)}
+    X_dict, Y, _ = extract_activations(dl, base, layers, "query", device, tokenizer)
+    
+    # Stack layers: (N, L, C, H)
+    X_stacked = torch.stack([X_dict[l] for l in layers], dim=1)
 
-    # Load probe
+    # Load multi-layer probe
     hidden_size = shared_model.config.hidden_size
     num_labels = len(DIRS)
+    probe = MultiLayerQueryHead(hidden_size, len(layers), num_labels, torch.float32).to(device)
     
-    if args.mode == "baseline":
-        probe = train_probe.BaselineHead(hidden_size, num_labels, torch.float32).to(device)
-    else:
-        probe = train_probe.QueryHead(hidden_size, num_labels, torch.float32).to(device)
-        
+    print(f"Loading checkpoint from {args.model_path}...")
     probe.load_state_dict(torch.load(args.model_path, map_location=device))
     probe.eval()
 
-    # Determine thresholds
+    # Determine thresholds (default 0.5 or from summary)
     thresholds = torch.full((len(DIRS),), 0.5, device=device)
-    if args.threshold is not None:
-        thresholds = torch.full((len(DIRS),), args.threshold, device=device)
-    elif args.summary_json:
-        # Load from summary.json (optimized per-class)
+    if args.summary_json:
         with open(args.summary_json, "r") as f:
             summary = json.load(f)
-        key = f"{args.mode}/layer_{args.layer_idx}"
-        best_metrics = summary.get(key, {}).get("best", {})
-        ts = best_metrics.get("per_label_thresholds", None)
+        ml_best = summary.get("multilayer", {}).get("best", {})
+        ts = ml_best.get("per_label_thresholds", None)
         if ts:
             thresholds = torch.tensor(ts, device=device)
             print(f"Loaded optimized thresholds: {ts}")
-        else:
-            t = best_metrics.get("threshold", 0.5)
-            thresholds = torch.full((len(DIRS),), t, device=device)
-            print(f"Loaded single threshold: {t}")
 
     # Evaluate
     print("Evaluating...")
-    metrics = evaluate_cached(probe, X, Y, thresholds)
-    
+    with torch.no_grad():
+        logits = probe(X_stacked)
+        probs = torch.sigmoid(logits).cpu().numpy()
+        y_true = Y.cpu().numpy()
+        
+    metrics = train_probe.eval_with_threshold(y_true, probs, 0.5) # Basic eval
+    # If we have per-class thresholds
+    if args.summary_json:
+        metrics = train_probe.eval_with_per_class_threshold(y_true, probs, thresholds.cpu().numpy())
+
     # Save results
-    result_file = out_dir / "eval_metrics.json"
+    result_file = out_dir / "eval_metrics_balanced.json"
     with open(result_file, "w") as f:
         json.dump(metrics, f, indent=2)
     

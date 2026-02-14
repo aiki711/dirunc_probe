@@ -142,6 +142,21 @@ def extract_mode_layer_metrics(summary: dict):
         }
         mode_to_layers[mode].add(layer)
 
+    # Handle 'multilayer' key if it exists
+    if "multilayer" in summary:
+        v = summary["multilayer"]
+        m = get_best_metrics(v)
+        # We use a dummy layer index 99 for visualization of fused model
+        mode = "multilayer"
+        layer = 99
+        metrics[mode][layer] = {
+            "micro_f1": float(m.get("micro_f1", 0.0)),
+            "macro_f1": float(m.get("macro_f1", 0.0)),
+            "macro_f1_posonly": float(m.get("macro_f1_posonly", 0.0)),
+            "threshold": float(m.get("threshold", 0.5)),
+        }
+        mode_to_layers[mode].add(layer)
+
     mode_to_layers = {m: sorted(list(s)) for m, s in mode_to_layers.items()}
     
     # Update DIRS from summary if possible
@@ -399,6 +414,17 @@ def extract_mode_layer_perlabel(summary: dict):
         layer_str = parts[1]
         layer = int(layer_str.replace("layer_", ""))
         m = get_best_metrics(v)
+        pl = m.get("per_label_f1", None)
+        if isinstance(pl, list) and len(pl) == len(DIRS):
+            perlabel[mode][layer] = [float(x) for x in pl]
+            mode_to_layers[mode].add(layer)
+
+    # Handle 'multilayer' key if it exists
+    if "multilayer" in summary:
+        v = summary["multilayer"]
+        m = get_best_metrics(v)
+        mode = "multilayer"
+        layer = 99
         pl = m.get("per_label_f1", None)
         if isinstance(pl, list) and len(pl) == len(DIRS):
             perlabel[mode][layer] = [float(x) for x in pl]
