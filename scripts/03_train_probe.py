@@ -575,8 +575,8 @@ def extract_activations(
     tqdm_obj = tqdm(dl, desc="Extracting", disable=no_tqdm, mininterval=30.0) # 30秒間隔に緩和
     for batch in tqdm_obj:
         batch_count += 1
-        # 100バッチごとに明示的に一行出力 (ログ用)
-        if batch_count % 100 == 0 or batch_count == 1 or batch_count == len(dl):
+        # 500バッチごとに明示的に一行出力 (ログ用)
+        if batch_count % 500 == 0 or batch_count == 1 or batch_count == len(dl):
             print(f"[{mode}] Extraction progress: {batch_count}/{len(dl)} batches", flush=True)
             
         input_ids = batch["input_ids"].to(device)
@@ -1450,6 +1450,7 @@ def main() -> None:
 
     # Check layers
     num_layers = int(shared_model.config.num_hidden_layers)
+    hidden_size = int(shared_model.config.hidden_size)
     
     if args.layer != -1:
         layers = [args.layer]
@@ -1592,7 +1593,7 @@ def main() -> None:
                 Y_dev=Y_dev.to(device),
                 train_span_summary=train_span,
                 dev_span_summary=dev_span,
-                hidden_size=int(shared_model.config.hidden_size),
+                hidden_size=hidden_size,
                 batch_size=args.batch_size,
                 epochs=args.epochs,
                 lr=args.lr,
@@ -1659,7 +1660,7 @@ def main() -> None:
                             Y_dev=ry_dv,
                             train_span_summary=rspan_tr,
                             dev_span_summary=rspan_dv,
-                            hidden_size=int(shared_model.config.hidden_size),
+                            hidden_size=hidden_size,
                             batch_size=args.batch_size,
                             epochs=args.epochs,
                             lr=args.lr,
@@ -1731,7 +1732,7 @@ def main() -> None:
             Y_dev=Y_dev_ml.to(device),
             train_span_summary=train_span_ml,
             dev_span_summary=dev_span_ml,
-            hidden_size=shared_model.config.hidden_size,
+            hidden_size=hidden_size,
             batch_size=args.batch_size,
             epochs=args.epochs,
             lr=args.lr,

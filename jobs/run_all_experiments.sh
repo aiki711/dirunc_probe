@@ -38,13 +38,13 @@ if [ "${EXPERIMENT_TYPE}" = "baseline" ] || [ "${EXPERIMENT_TYPE}" = "all" ]; th
     echo "========================================="
     echo "実験1: ベースライン（単一閾値）"
     echo "========================================="
-    echo "出力: runs/experiment1_baseline"
+    echo "出力: runs/imbalanced/experiment1_baseline"
     echo ""
     
     python scripts/03_train_probe.py \
       --model_name ${MODEL_NAME} \
       --data_dir ${DATA_DIR} \
-      --out_dir runs/experiment1_baseline \
+      --out_dir runs/imbalanced/experiment1_baseline \
       --epochs ${EPOCHS} \
       --batch_size ${BATCH_SIZE} \
       --lr ${LR} \
@@ -65,13 +65,13 @@ if [ "${EXPERIMENT_TYPE}" = "perclass" ] || [ "${EXPERIMENT_TYPE}" = "all" ]; th
     echo "========================================="
     echo "実験2: クラスごと閾値最適化"
     echo "========================================="
-    echo "出力: runs/experiment2_perclass"
+    echo "出力: runs/imbalanced/experiment2_perclass"
     echo ""
     
     python scripts/03_train_probe.py \
       --model_name ${MODEL_NAME} \
       --data_dir ${DATA_DIR} \
-      --out_dir runs/experiment2_perclass \
+      --out_dir runs/imbalanced/experiment2_perclass \
       --epochs ${EPOCHS} \
       --batch_size ${BATCH_SIZE} \
       --lr ${LR} \
@@ -95,13 +95,13 @@ if [ "${EXPERIMENT_TYPE}" = "multilayer" ] || [ "${EXPERIMENT_TYPE}" = "all" ]; 
     echo "実験3: マルチレイヤー＋クラスごと閾値最適化"
     echo "========================================="
     echo "融合レイヤー: 10, 15, 20, 25"
-    echo "出力: runs/experiment3_multilayer"
+    echo "出力: runs/imbalanced/experiment3_multilayer"
     echo ""
     
     python scripts/03_train_probe.py \
       --model_name ${MODEL_NAME} \
       --data_dir ${DATA_DIR} \
-      --out_dir runs/experiment3_multilayer \
+      --out_dir runs/imbalanced/experiment3_multilayer \
       --epochs ${EPOCHS} \
       --batch_size ${BATCH_SIZE} \
       --lr ${LR} \
@@ -125,18 +125,18 @@ echo "========================================="
 echo ""
 echo "結果の場所:"
 if [ "${EXPERIMENT_TYPE}" = "baseline" ] || [ "${EXPERIMENT_TYPE}" = "all" ]; then
-    echo "  実験1（ベースライン）:     runs/experiment1_baseline/summary.json"
+    echo "  実験1（ベースライン）:     runs/imbalanced/experiment1_baseline/summary.json"
 fi
 if [ "${EXPERIMENT_TYPE}" = "perclass" ] || [ "${EXPERIMENT_TYPE}" = "all" ]; then
-    echo "  実験2（クラス閾値）:        runs/experiment2_perclass/summary.json"
+    echo "  実験2（クラス閾値）:        runs/imbalanced/experiment2_perclass/summary.json"
 fi
 if [ "${EXPERIMENT_TYPE}" = "multilayer" ] || [ "${EXPERIMENT_TYPE}" = "all" ]; then
-    echo "  実験3（マルチレイヤー）:    runs/experiment3_multilayer/summary.json"
+    echo "  実験3（マルチレイヤー）:    runs/imbalanced/experiment3_multilayer/summary.json"
 fi
 echo ""
 echo "比較レポートの生成:"
 echo "  python scripts/compare_results.py \\"
-echo "    --baseline runs/experiment1_baseline \\"
-echo "    --perclass runs/experiment2_perclass \\"
-echo "    --multilayer runs/experiment3_multilayer"
+echo "    --baseline runs/imbalanced/experiment1_baseline \\"
+echo "    --perclass runs/imbalanced/experiment2_perclass \\"
+echo "    --multilayer runs/imbalanced/experiment3_multilayer"
 echo ""

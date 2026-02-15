@@ -58,7 +58,8 @@ echo ""
 python scripts/03_train_probe.py \
   --model_name ${MODEL_NAME} \
   --data_dir ${DATA_DIR} \
-  --eval_data_dirTBD \
+  --eval_data_dir "data/balanced" \
+  --dev_file "dev_balanced.jsonl" \
   --out_dir ${OUT_DIR} \
   --epochs ${EPOCHS} \
   --batch_size ${BATCH_SIZE} \
