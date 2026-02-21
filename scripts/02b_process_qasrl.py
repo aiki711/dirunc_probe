@@ -1,19 +1,48 @@
 # scripts/02b_process_qasrl.py
+# QA-SRL から "Natural Missing" データを抽出するスクリプト。
+#
+# QA-SRL v2 の特性:
+#   全ての質問には有効な回答スパンが付与されている（answerJudgments は全て isValid: true）。
+#   そのため「回答なし = Missing」ではなく、
+#   「述語に対してアノテーターが生成しなかった WH 質問の DIR = Missing」
+#   （= 述語が自然に要求するはずの役割が省略されている）という解釈を採用する。
+#
+# ロジック:
+#   各述語（動詞）について、生成された質問のWH疑問詞から DIR 集合（answered_dirs）を求める。
+#   7つの DIRS から answered_dirs を引いた差分 = missing_dirs。
+#   ただし、全 DIR が missing（質問が0件）の述語はスキップする。
+#   また、意味的に必然的でない DIR（why/who/whichなど）のみ missing にならないよう、
+#   answered がある述語のみを対象とする（質問が1件以上ある述語のみ）。
+#
+# 出力スキーマ（統一 JSONL）:
+#   {
+#     "id": "qasrl::{sent_id}::v{verb_idx}::natural",
+#     "source": "qasrl",
+#     "split": "train",
+#     "level": "natural",
+#     "text": "Geologists study how rocks form. [WHO?] ...",
+#     "labels": {"who": 0, ..., "where": 1},
+#     "intent_or_predicate": "study"
+#   }
+
 from __future__ import annotations
 
 import argparse
-import json
 import gzip
-import random
-import re
+import json
 from collections import Counter
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Set
+from typing import Any, Dict, List, Set
 
-from common import DIRS, QUERY_TOKENS_STR, map_slot_to_dir, PLACEHOLDER_BY_DIR, normalize_text, replace_values_in_text
+from common import (
+    DIRS,
+    QUERY_TOKENS_STR,
+    build_label_dict,
+    normalize_text,
+    write_jsonl,
+)
 
-# --- QA-SRL Specific Constants ---
+# ---------- QA-SRL ユーティリティ ----------
 
 WH_MAPPING = {
     "who": "who",
@@ -25,275 +54,182 @@ WH_MAPPING = {
     "which": "which",
 }
 
-def get_dir_from_question(question: str) -> str:
-    q_lower = question.lower().strip()
-    first_word = q_lower.split(" ")[0]
-    if first_word in WH_MAPPING:
-        return WH_MAPPING[first_word]
-    # Fallback for "how much", "how long" etc.
-    if first_word == "how":
-        return "how"
-    return "what"
+# QA-SRL で「質問が存在しないことが Natural Missing として意味を持つ DIR」
+# why/who/which は文脈なしでは必ずしも Missing と言えないため除外
+MEANINGFUL_MISSING_DIRS = {"who", "what", "when", "where", "how"}
 
-def extract_answers_from_spans(tokens: List[str], judgments: List[Dict[str, Any]]) -> List[str]:
-    """
-    Extract answer strings from token spans.
-    judgments: list of dicts with 'isValid' and 'spans' [[start, end), ...]
-    """
-    answers = []
-    for judg in judgments:
-        if not judg.get("isValid", False):
-            continue
-        spans = judg.get("spans", [])
-        for (start, end) in spans:
-            # QA-SRL 2.0 spans are usually [start, end) token indices
-            if start < 0 or end > len(tokens):
-                continue
-            ans_tokens = tokens[start:end]
-            ans_str = " ".join(ans_tokens)
-            if ans_str:
-                answers.append(ans_str)
-    return list(set(answers)) # Unique answers
+
+def get_dir_from_question(question: str) -> str:
+    """質問文の先頭語から DIR を返す。"""
+    first_word = question.lower().strip().split(" ")[0]
+    return WH_MAPPING.get(first_word, "what")
+
+
+def get_dir_from_slots(slots: Dict[str, str]) -> str:
+    """questionSlots の wh フィールドから DIR を返す（より正確）。"""
+    wh = slots.get("wh", "").lower()
+    return WH_MAPPING.get(wh, "what")
+
+
+# ---------- ファイル処理 ----------
 
 def process_file(
     input_path: Path,
     output_path: Path,
     split_name: str,
-    seed: int = 42,
     limit: int = 0,
-    max_per_class: int = 0
 ) -> None:
-    
-    print(f"Processing {input_path} -> {output_path} (limit={limit}, max_per_class={max_per_class})")
-    
-    rows_out: List[Dict[str, Any]] = []
-    dir_counts = Counter()
-    
-    # Store candidates for balancing if max_per_class > 0 and split is train
-    do_balance = (max_per_class > 0 and split_name == "train")
-    candidates_by_dir: Dict[str, List[Dict[str, Any]]] = {d: [] for d in DIRS}
-    final_rows: List[Dict[str, Any]] = []
+    print(f"Processing {input_path} -> {output_path} (limit={limit})")
 
-    rng = random.Random(seed)
-    
-    # Read GZ file
-    with gzip.open(input_path, "rt", encoding="utf-8") as f:
+    rows_out: List[Dict[str, Any]] = []
+    dir_counts: Counter = Counter()
+    n_skipped_no_verb = 0
+    n_skipped_no_answered = 0
+    n_skipped_no_meaningful_missing = 0
+
+    opener = gzip.open if str(input_path).endswith(".gz") else open
+
+    with opener(input_path, "rt", encoding="utf-8") as f:
         count = 0
         for line in f:
             if limit and count >= limit:
                 break
-                
+
             try:
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue
 
-            # Parse Structure
-            # {
-            #   "sentenceTokens": ["Both", "occur", ...],
-            #   "verbEntries": {
-            #       "1": {
-            #           "verbIndex": 1,
-            #           "questionLabels": {
-            #               "What occurs?": {
-            #                   "questionString": "...",
-            #                   "answerJudgments": [...]
-            #               }
-            #           }
-            #       }
-            #   }
-            # }
-
             tokens = row.get("sentenceTokens", [])
             if not tokens:
+                count += 1
                 continue
-            
+
             sentence_text = " ".join(tokens)
-            
+            sent_id = row.get("sentenceId", str(hash(sentence_text)))
+
             verb_entries = row.get("verbEntries", {})
-            
+            if not verb_entries:
+                n_skipped_no_verb += 1
+                count += 1
+                continue
+
             for v_key, v_data in verb_entries.items():
-                verb_idx = v_data.get("verbIndex")
+                verb_idx = v_data.get("verbIndex", v_key)
                 q_labels = v_data.get("questionLabels", {})
-                
+
                 if not q_labels:
                     continue
-                
-                # Collect QAs for this verb
-                qas = []
+
+                # 述語の表層形を取得
+                predicate = (
+                    tokens[verb_idx]
+                    if isinstance(verb_idx, int) and verb_idx < len(tokens)
+                    else str(verb_idx)
+                )
+
+                # 生成された質問の DIR 集合を収集（questionSlots.wh を優先使用）
+                answered_dirs: Set[str] = set()
                 for q_str, q_data in q_labels.items():
-                    question_text = q_data.get("questionString", q_str)
-                    judgments = q_data.get("answerJudgments", [])
-                    answers = extract_answers_from_spans(tokens, judgments)
-                    
-                    if not answers:
-                        # Skip if no valid answer (e.g. all invalid judgments)
-                        continue
-                        
-                    q_dir = get_dir_from_question(question_text)
-                    dir_counts[q_dir] += 1
-                    
-                    qas.append({
-                        "question": question_text,
-                        "answers": answers,
-                        "dir": q_dir
-                    })
-                
-                if not qas:
+                    slots = q_data.get("questionSlots", {})
+                    if slots:
+                        q_dir = get_dir_from_slots(slots)
+                    else:
+                        question_text = q_data.get("questionString", q_str)
+                        q_dir = get_dir_from_question(question_text)
+                    answered_dirs.add(q_dir)
+
+                if not answered_dirs:
+                    n_skipped_no_answered += 1
                     continue
-                    
-                # Generate Examples
-                # 1. Resolved
-                
-                relevant_dirs = set(qa["dir"] for qa in qas)
-                db_id = f"{split_name}::{row.get('sentenceId', hash(sentence_text))}::v{verb_idx}"
-                
-                text_resolved = normalize_text(sentence_text) + QUERY_TOKENS_STR
-                labels_resolved = {d: 0 for d in DIRS}
-                
-                if do_balance:
-                   # For balancing, we track "resolved" separately or just include them? 
-                   # Usually resolved match the number of unresolved. 
-                   # Let's save resolved to final_rows directly (or skip if we only want balanced positive examples)
-                   # Strategy: We want balanced POSITIVE samples. Resolved samples are negative (all 0).
-                   # We can keep all resolved, OR sample them to match total positives.
-                   # For simplicity, let's keep all resolved but maybe downsample later if too many.
-                   # Actually, too many resolved (negatives) might be fine.
-                   final_rows.append({
-                       "id": f"{db_id}::resolved",
-                       "text": text_resolved,
-                       "labels": labels_resolved,
-                       "split": split_name,
-                       "meta": {"type": "resolved", "verb_idx": verb_idx, "sentence": sentence_text}
-                   })
-                else:
-                    rows_out.append({
-                    "id": f"{db_id}::resolved",
-                    "text": text_resolved,
-                    "labels": labels_resolved,
+
+                # missing = MEANINGFUL_MISSING_DIRS から answered を引いた差分
+                missing_dirs = MEANINGFUL_MISSING_DIRS - answered_dirs
+
+                if not missing_dirs:
+                    n_skipped_no_meaningful_missing += 1
+                    continue
+
+                labels = build_label_dict(list(missing_dirs))
+
+                # DIR カウント更新
+                for d in missing_dirs:
+                    dir_counts[d] += 1
+
+                text = normalize_text(sentence_text) + QUERY_TOKENS_STR
+
+                rows_out.append({
+                    "id": f"qasrl::{sent_id}::v{verb_idx}::natural",
+                    "source": "qasrl",
                     "split": split_name,
-                    "meta": {"type": "resolved", "verb_idx": verb_idx, "sentence": sentence_text}
+                    "level": "natural",
+                    "text": text,
+                    "labels": labels,
+                    "intent_or_predicate": predicate,
+                    # デバッグ用
+                    "_meta": {
+                        "sentence": sentence_text,
+                        "verb_idx": verb_idx,
+                        "answered_dirs": sorted(answered_dirs),
+                        "missing_dirs": sorted(missing_dirs),
+                    },
                 })
-                
-                # 2. Unresolved
-                for i, target_qa in enumerate(qas):
-                    tgt_dir = target_qa["dir"]
-                    tgt_answers = target_qa["answers"]
-                    
-                    for level in [0, 1]:
-                        if level == 0:
-                            text_perturbed = replace_values_in_text(sentence_text, tgt_answers, mode="delete")
-                        else:
-                            ph = PLACEHOLDER_BY_DIR.get(tgt_dir, "something")
-                            text_perturbed = replace_values_in_text(sentence_text, tgt_answers, mode="placeholder", placeholder=ph)
-                        
-                        if normalize_text(text_perturbed) == normalize_text(sentence_text):
-                            continue
-                            
-                        text_final = normalize_text(text_perturbed) + QUERY_TOKENS_STR
-                        
-                        labels = {d: 0 for d in DIRS}
-                        labels[tgt_dir] = 1
-                        
-                        if do_balance:
-                            candidates_by_dir[tgt_dir].append({
-                                "id": f"{db_id}::qa{i}::lvl{level}",
-                                "text": text_final,
-                                "labels": labels,
-                                "split": split_name,
-                                "meta": {
-                                    "type": "unresolved",
-                                    "level": level,
-                                    "target_dir": tgt_dir,
-                                    "question": target_qa["question"]
-                                }
-                            })
-                        else:
-                            rows_out.append({
-                            "id": f"{db_id}::qa{i}::lvl{level}",
-                            "text": text_final,
-                            "labels": labels,
-                            "split": split_name,
-                            "meta": {
-                                "type": "unresolved",
-                                "level": level,
-                                "target_dir": tgt_dir,
-                                "question": target_qa["question"]
-                            }
-                        })
-                
+
             count += 1
-            
-    # Apply Balancing
-    if do_balance:
-        print("Applying balancing...")
-        balanced_positives = []
-        for d in DIRS:
-            cands = candidates_by_dir[d]
-            n_cands = len(cands)
-            print(f"  {d}: found {n_cands}")
-            if n_cands > max_per_class:
-                selected = rng.sample(cands, max_per_class)
-                balanced_positives.extend(selected)
-            else:
-                balanced_positives.extend(cands)
-        
-        # Merge resolved and balanced positives
-        # Optional: Downsample resolved to match positives ratio? 
-        # For now, keep all resolved to maintain variety of "complete" sentences.
-        final_rows.extend(balanced_positives)
-        rows_out = final_rows
-        
-        # Shuffle
-        rng.shuffle(rows_out)
-        
-        # Stats
-        label_counts = Counter()
-        for r in rows_out:
-            for k, v in r["labels"].items():
-                if v == 1: label_counts[k] += 1
-        print("Balanced Stats:", label_counts)
 
-    # Write output
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as f:
-        for r in rows_out:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
-            
+    write_jsonl(output_path, rows_out)
+
     print(f"Saved {len(rows_out)} examples to {output_path}")
-    print("DIR Stats:", dir_counts)
+    print(f"  Skipped (no verb entries): {n_skipped_no_verb}")
+    print(f"  Skipped (no answered q):   {n_skipped_no_answered}")
+    print(f"  Skipped (no meaningful missing): {n_skipped_no_meaningful_missing}")
+    print("  DIR distribution (positive labels):")
+    for d in DIRS:
+        c = dir_counts.get(d, 0)
+        pct = c / max(len(rows_out), 1) * 100
+        print(f"    {d:>6}: {c:>8}  ({pct:5.1f}%)")
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir", type=str, default="temp_qasrl/qasrl-bank/data/qasrl-v2/orig", help="Input directory")
-    parser.add_argument("--out_dir", type=str, default="data/processed/qasrl/dirunc", help="Output directory")
-    parser.add_argument("--limit", type=int, default=0, help="Limit rows per file")
-    parser.add_argument("--max_per_class", type=int, default=20000, help="Max examples per class for training balancing")
+# ---------- メインエントリ ----------
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="QA-SRL から Natural Missing データを抽出する。")
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default="temp_qasrl/qasrl-bank/data/qasrl-v2/orig",
+        help="QA-SRL データディレクトリ（.jsonl.gz ファイルを含む）",
+    )
+    parser.add_argument(
+        "--out_dir",
+        type=str,
+        default="data/processed/qasrl/natural",
+        help="出力ディレクトリ",
+    )
+    parser.add_argument("--limit", type=int, default=0, help="1ファイルあたりの最大処理行数（0=無制限）")
     args = parser.parse_args()
-    
+
     in_dir = Path(args.data_dir)
     out_dir = Path(args.out_dir)
-    
+
     if not in_dir.exists():
-        print(f"Input directory not found: {in_dir}")
+        print(f"[error] Input directory not found: {in_dir}")
         return
 
-    # Files to process
-    # Map input filename to output split name
     files_map = {
         "train.jsonl.gz": "train",
         "dev.jsonl.gz": "dev",
-        "test.jsonl.gz": "test"
+        "test.jsonl.gz": "test",
     }
-    
+
     for fname, split in files_map.items():
         fpath = in_dir / fname
         if fpath.exists():
             out_path = out_dir / f"{split}.jsonl"
-            process_file(fpath, out_path, split, limit=args.limit, max_per_class=args.max_per_class)
+            process_file(fpath, out_path, split, limit=args.limit)
         else:
-            print(f"Skipping {fname}, not found.")
+            print(f"[skip] {fname} not found.")
+
 
 if __name__ == "__main__":
     main()

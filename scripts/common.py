@@ -1,6 +1,8 @@
 # scripts/common.py
 from __future__ import annotations
-from typing import Dict, List, Optional, Sequence
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence
+import json
 import re
 
 # --- Constants ---
@@ -30,25 +32,38 @@ QUERY_TOKENS_STR = " " + " ".join(SPECIAL_TOKENS)
 # --- Slot Mapping ---
 
 WHO_KWS = [
+    "who", "whom", "whose",
     "attendee", "contact", "recipient", "person", "customer", "client",
     "doctor", "trainer", "agent", "name of person",
-    "stylist", "dentist", "therapist", "receiver", "host", "guest"
+    "stylist", "dentist", "therapist", "receiver", "host", "guest",
+    # 追加: 数量せず人物を示す語
+    "people", "guests", "passengers", "traveler", "travelers",
+    "user", "caller", "owner", "driver", "rider", "riders",
+    "number of people", "number of passengers", "number of travelers",
+    "party size", "party_size", "number of riders", "number of guests",
+    # 追加: adults / children 系
+    "adult", "adults", "child", "children", "number of adults",
+    # 追加: 共有ライド（誰と乗るか→人物）
+    "shared ride", "shared_ride",
 ]
 WHEN_KWS = [
+    "when",
     "date", "time", "day", "week", "month", "year", "duration",
     "start time", "end time", "arrive", "leave", "check in", "check out"
 ]
 WHERE_KWS = [
-    "location", "address", "city", "place", "destination", "origin",
+    "where",
+    "location", "address", "city", "place", "destination", "origin", "departure",
     "airport", "station", "area", "neighborhood", "venue"
 ]
-WHY_KWS = ["reason", "purpose", "because", "intent"]
-HOW_KWS = ["method", "mode", "transport", "payment", "delivery", "format", "via", "type", "option", "shared", "ride"]
+WHY_KWS = ["why", "reason", "purpose", "because", "intent"]
+HOW_KWS = ["how", "method", "mode", "transport", "payment", "delivery", "format", "via", "type", "option", "ride"]
 HOW_MANY_KWS = ["number", "count", "amount", "quantity", "seats", "riders", "guests", "party_size", "people"]
 HOW_MODE_KWS = ["shared", "private", "mode", "option"]
 
 # "Which" often implies selection from a set, or specific attribute like price range, star rating etc.
 WHICH_KWS = [
+    "which", "what category", "what type", "what kind",
     "price", "range", "star", "rating", "type", "choice", "selection", "internet", "parking"
 ]
 
@@ -67,6 +82,8 @@ def map_slot_to_dir(slot_name: str, slot_desc: str) -> str:
         return "where"
     if any(k in s for k in WHY_KWS):
         return "why"
+    if any(k in s for k in WHICH_KWS):
+        return "which"
     
     # "Which" vs "How" vs "What" can be tricky.
     # "type" is in HOW_KWS in original code, but often it's "which type".
@@ -85,6 +102,29 @@ def map_slot_to_dir(slot_name: str, slot_desc: str) -> str:
 
     # fallback
     return "what"
+
+
+# --- Label Utilities ---
+
+def build_label_dict(active_dirs: List[str]) -> Dict[str, int]:
+    """
+    active_dirs に含まれる方向性を 1、それ以外を 0 にしたラベル辞書を返す。
+    重複は無視される。
+
+    Example:
+        build_label_dict(["when", "where"]) -> {"who":0, "what":0, "when":1, ...}
+    """
+    active = set(active_dirs)
+    return {d: (1 if d in active else 0) for d in DIRS}
+
+
+def write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> None:
+    """JSONL 形式で書き出す（ディレクトリは自動作成）。"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
 # --- Text Perturbation Placeholders ---

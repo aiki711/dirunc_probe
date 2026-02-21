@@ -368,7 +368,7 @@ def plot_B_mode_layer_metrics(summary: dict, out_path: Path):
         ax.grid(True, alpha=0.3)
         ax.legend()
 
-    fig.suptitle("baseline vs query: metrics across layers", fontsize=14)
+    fig.suptitle("Layer-wise metrics across modes", fontsize=14)
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
 
@@ -388,7 +388,7 @@ def plot_B_best_bars(summary: dict, out_path: Path):
     ax.set_xticklabels(keys, rotation=0)
     ax.set_ylim(0, 1.0)
     ax.set_ylabel("score")
-    ax.set_title("best baseline vs best query")
+    ax.set_title("Comparison of best metrics across modes")
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend()
     fig.savefig(out_path, dpi=200)
@@ -467,7 +467,7 @@ def plot_B_per_label_f1_vs_layer(summary: dict, out_path: Path):
     for j in range(i + 1, len(axes)):
         axes[j].axis('off')
 
-    fig.suptitle("baseline vs query: per-label F1 across layers", fontsize=14)
+    fig.suptitle("Per-label F1 across layers", fontsize=14)
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
 
@@ -487,7 +487,7 @@ def plot_B_best_per_label_bar(summary: dict, out_path: Path):
     ax.set_xticklabels(DIRS)
     ax.set_ylim(0, 1.0)
     ax.set_ylabel("F1")
-    ax.set_title("best baseline vs best query: per-label F1")
+    ax.set_title("Comparison of best per-label F1")
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend()
     fig.savefig(out_path, dpi=200)

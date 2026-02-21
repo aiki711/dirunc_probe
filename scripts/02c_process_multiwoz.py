@@ -1,225 +1,305 @@
 # scripts/02c_process_multiwoz.py
+# MultiWOZ から "Natural Missing" データを逆算アプローチ（ドメイン別アンカー）で抽出するスクリプト。
+#
+# ロジック（3ステップ）:
+#   Step 1 (ゴール収集): 対話の最終システムターンの metadata を参照し、
+#                        ドメイン別に充足された semi スロットを収集する。
+#   Step 2 (初回アンカー特定): 各ドメインについて、対話を最初から順に確認し、
+#                        そのドメインの semi スロットが初めて metadata に記録された
+#                        システムターンの直前ユーザーターンをアンカーとする。
+#   Step 3 (ラベリング): アンカー発話 vs ゴールスロットで差分 = Missing をラベリング。
+#                        ドメインごとに 1 レコード生成。
+#
+# 出力スキーマ（統一 JSONL）:
+#   {
+#     "id": "multiwoz::{dlg_id}::domain_{domain}::t{turn_idx}::natural",
+#     "source": "multiwoz",
+#     "split": "train",
+#     "level": "natural",
+#     "text": "I am looking for a hotel. [WHO?] ...",
+#     "labels": {"who": 0, ..., "where": 1},
+#     "intent_or_predicate": "hotel"
+#   }
+
 from __future__ import annotations
 
 import argparse
 import json
-import random
-import re
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from common import DIRS, QUERY_TOKENS_STR, map_slot_to_dir, PLACEHOLDER_BY_DIR, normalize_text, replace_values_in_text
+from common import (
+    DIRS,
+    QUERY_TOKENS_STR,
+    build_label_dict,
+    map_slot_to_dir,
+    normalize_text,
+    write_jsonl,
+)
+
+# ---------- 定数 ----------
+
+# metadata の値としてスロット未充足を示す文字列
+EMPTY_VALUES = {"", "not mentioned", "none", "dontcare"}
+
+
+# ---------- ユーティリティ ----------
 
 def read_list_file(path: Path) -> Set[str]:
-    """Read line-separated list of filenames."""
+    """ファイル名リストファイルを読み込んで set で返す。"""
     if not path.exists():
         return set()
     with path.open("r", encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
-    return set(lines)
+        return {line.strip() for line in f if line.strip()}
+
+
+def is_slot_filled(value: str) -> bool:
+    """スロット値が有効な情報を持つかどうか判定する。"""
+    return bool(value) and value.strip().lower() not in EMPTY_VALUES
+
+
+def collect_domain_slots(metadata_domain: Dict[str, Any]) -> Dict[str, str]:
+    """1ドメインの metadata から充足されたスロット（semi + book）を返す。"""
+    # 検索条件 (semi)
+    semi = metadata_domain.get("semi", {})
+    slots = {slot: val for slot, val in semi.items() if is_slot_filled(val)}
+    
+    # 予約条件 (book)
+    # book 内には 'booked' (予約済み情報のリスト) と 'people', 'day', 'time', 'stay' 等のスロットがある
+    book = metadata_domain.get("book", {})
+    for slot, val in book.items():
+        if slot == "booked":
+            continue  # メタ情報なのでスキップ
+        if is_slot_filled(val):
+            # semi との重複を避ける（通常はないが安全のため）
+            if slot not in slots:
+                slots[slot] = val
+    
+    return slots
+
+
+def value_mentioned_in_text(value: str, text: str) -> bool:
+    """値（文字列）がテキスト中に含まれるかどうか（大文字小文字無視）。"""
+    return value.strip().lower() in text.lower()
+
+
+# ---------- 対話ごとの処理 ----------
+
+def process_dialogue(
+    dialogue_id: str,
+    log: List[Dict[str, Any]],
+    split: str,
+) -> List[Dict[str, Any]]:
+    """1つの MultiWOZ 対話から Natural Missing レコードを生成して返す。"""
+
+    records: List[Dict[str, Any]] = []
+
+    # MultiWOZ のログ構造:
+    #   偶数インデックス = ユーザーターン
+    #   奇数インデックス = システムターン（metadata あり）
+
+    if len(log) < 2:
+        return []
+
+    # ----------------------------------------------------------
+    # Step 1: 最終システムターンの metadata からドメイン別ゴールを収集
+    # ----------------------------------------------------------
+    # 最終システムターンは最後の奇数インデックス
+    last_sys_idx = None
+    for i in range(len(log) - 1, -1, -1):
+        if i % 2 == 1:  # 奇数 = システムターン
+            last_sys_idx = i
+            break
+
+    if last_sys_idx is None:
+        return []
+
+    last_metadata = log[last_sys_idx].get("metadata", {})
+    goal_by_domain: Dict[str, Dict[str, str]] = {}
+
+    for domain, domain_data in last_metadata.items():
+        filled = collect_domain_slots(domain_data)
+        if filled:
+            goal_by_domain[domain] = filled
+
+    if not goal_by_domain:
+        return []
+
+    # ----------------------------------------------------------
+    # Step 2: ドメインごとの「初回アンカーターン」を特定
+    # ----------------------------------------------------------
+    # anchor_by_domain[domain] = (user_turn_idx, user_text)
+    anchor_by_domain: Dict[str, Tuple[int, str]] = {}
+
+    for i in range(0, len(log) - 1, 2):  # ユーザーターン（偶数）を順に確認
+        user_text = normalize_text(log[i].get("text", ""))
+        sys_idx = i + 1
+        if sys_idx >= len(log):
+            break
+
+        sys_metadata = log[sys_idx].get("metadata", {})
+
+        for domain in goal_by_domain:
+            if domain in anchor_by_domain:
+                continue  # すでに初回アンカーを記録済み
+
+            domain_meta = sys_metadata.get(domain, {})
+            filled_now = collect_domain_slots(domain_meta)
+
+            if filled_now:
+                # このシステムターンで初めてドメインのスロットが記録された
+                # → 直前のユーザーターンをアンカーとする
+                anchor_by_domain[domain] = (i, user_text)
+
+    if not anchor_by_domain:
+        return []
+
+    # ----------------------------------------------------------
+    # Step 3: ドメインごとにラベリング
+    # ----------------------------------------------------------
+    for domain, (t_idx, anchor_text) in anchor_by_domain.items():
+        goal_slots = goal_by_domain.get(domain, {})
+        if not goal_slots:
+            continue
+
+        # アンカーターン発話に既に含まれているスロット（= 言及済み）
+        mentioned_slots: Set[str] = set()
+        for slot, value in goal_slots.items():
+            if value_mentioned_in_text(value, anchor_text):
+                mentioned_slots.add(slot)
+
+        # Missing = ゴールスロット − 言及済みスロット
+        missing_slots = set(goal_slots.keys()) - mentioned_slots
+
+        if not missing_slots:
+            continue  # 全て言及済みはスキップ
+
+        # スロット名 (domain-slot) を DIR にマッピング
+        missing_dirs: List[str] = [
+            map_slot_to_dir(f"{domain}-{slot}", "")
+            for slot in missing_slots
+        ]
+
+        labels = build_label_dict(missing_dirs)
+
+        # 全ラベルが 0 の場合は安全のためスキップ
+        if not any(labels.values()):
+            continue
+
+        text = anchor_text + QUERY_TOKENS_STR
+
+        records.append({
+            "id": f"multiwoz::{dialogue_id}::domain_{domain}::t{t_idx}::natural",
+            "source": "multiwoz",
+            "split": split,
+            "level": "natural",
+            "text": text,
+            "labels": labels,
+            "intent_or_predicate": domain,
+            # デバッグ用
+            "_meta": {
+                "dialogue_id": dialogue_id,
+                "domain": domain,
+                "anchor_turn_idx": t_idx,
+                "missing_slots": sorted(missing_slots),
+                "missing_dirs": sorted(set(missing_dirs)),
+                "mentioned_slots": sorted(mentioned_slots),
+                "goal_slots": sorted(goal_slots.keys()),
+            },
+        })
+
+    return records
+
+
+# ---------- メインパイプライン ----------
 
 def process_multiwoz(
     data_path: Path,
     val_list_path: Path,
     test_list_path: Path,
     out_dir: Path,
-    seed: int = 42,
-    limit: int = 0
+    limit: int = 0,
 ) -> None:
-    
     print(f"Loading data from {data_path}...")
     with data_path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-        
+        data: Dict[str, Any] = json.load(f)
+
     val_files = read_list_file(val_list_path)
     test_files = read_list_file(test_list_path)
-    
-    # Identify train files
     train_files = set(data.keys()) - val_files - test_files
-    
-    rng = random.Random(seed)
-    
+
     splits = {
         "train": train_files,
         "dev": val_files,
-        "test": test_files
+        "test": test_files,
     }
-    
+
     for split_name, filenames in splits.items():
-        print(f"Processing split: {split_name} ({len(filenames)} dialogues)...")
-        rows_out = []
-        dir_counts = Counter()
-        slot_counts = Counter()
-        
+        print(f"\nProcessing split: {split_name} ({len(filenames)} dialogues)...")
+        all_records: List[Dict[str, Any]] = []
+        dir_counts: Counter = Counter()
         count = 0
-        for fname in filenames:
+
+        for fname in sorted(filenames):
             if limit and count >= limit:
                 break
-            
             if fname not in data:
                 continue
-                
+
             dialogue = data[fname]
             dialogue_id = fname.replace(".json", "")
             log = dialogue.get("log", [])
-            
-            # Iterate turns
-            # MultiWOZ user turns are at even indices: 0, 2, 4...
-            # System turns at odd: 1, 3, 5...
-            # Metadata in system turn i (odd) reflects state after user turn i-1 (even).
-            # So for user turn at idx (even), we look at metadata at idx+1.
-            
-            for i in range(0, len(log), 2):
-                user_turn = log[i]
-                if i + 1 >= len(log):
-                    break # Last user turn without system response/state update?
-                    
-                system_turn = log[i+1]
-                metadata = system_turn.get("metadata", {})
-                
-                user_text = normalize_text(user_turn.get("text", ""))
-                if not user_text:
-                    continue
-                
-                # Extract active slots present in text
-                present_slots = []
-                
-                # Metadata structure: domain -> semi -> slot: value
-                # (Ignore 'book' for now as it's often yes/no or abstract, stick to 'semi' aka informational slots)
-                
-                for domain, domain_data in metadata.items():
-                    semi = domain_data.get("semi", {})
-                    for slot, value in semi.items():
-                        if not value or value in ["", "not mentioned", "dontcare", "none"]:
-                            continue
-                        
-                        # Check if value is in user text
-                        # Simple case-insensitive exact match
-                        # Normalize value and text
-                        val_norm = normalize_text(value)
-                        if not val_norm:
-                            continue
-                            
-                        # Use regex for word boundary? Or just substring?
-                        # Value "cheap" matches "cheaply"? Maybe.
-                        # "centre" matches "centre"? Yes.
-                        # "6" matches "6"? Yes.
-                        # Let's use simple substring for robustness with typos in user text
-                        if val_norm.lower() in user_text.lower():
-                            slot_name = f"{domain}-{slot}"
-                            present_slots.append({
-                                "slot": slot_name,
-                                "value": val_norm,
-                                "domain": domain,
-                                "clean_slot": slot # just the slot name part for mapping
-                            })
-                
-                if not present_slots:
-                    continue
-                    
-                # For each present slot, create examples
-                # 1. Resolved (Target slot present) -> Label 0
-                # 2. Unresolved (Target slot removed) -> Label 1 for that DIR
-                
-                # Optimization: We can share the Resolved example across slots if we want, 
-                # but "required_slots" concept in DirUnc usually means "what is needed".
-                # Here, we treat "present slots" as "required". 
-                # (If user said it, it's important).
-                
-                # Base labels: All 0 (Assume everything present is satisfied).
-                labels_base = {d: 0 for d in DIRS}
-                
-                # Generate ONE resolved example per turn (containing all info)
-                # Or one per slot?
-                # Let's generate one per turn to be efficient, but we need to know what "Required" means for the prompt?
-                # In DirUnc, the "Query" is implicit. The model predicts missing info.
-                # If we provide full text, model should predict 0 for all.
-                
-                turn_uid = f"{dialogue_id}::t{i}"
-                rows_out.append({
-                    "id": f"{turn_uid}::resolved",
-                    "text": user_text + QUERY_TOKENS_STR,
-                    "labels": labels_base,
-                    "split": split_name,
-                    "meta": {"type": "resolved", "slots": [s["slot"] for s in present_slots]}
-                })
-                
-                # Generate Unresolved examples
-                for ps in present_slots:
-                    slot_full = ps["slot"]
-                    slot_clean = ps["clean_slot"]
-                    val = ps["value"]
-                    
-                    # Map to DIR
-                    d = map_slot_to_dir(slot_full, "") # No description available
-                    
-                    # Generate perturbed text
-                    # Level 0: Delete
-                    # Level 1: Placeholder
-                    
-                    for level in [0, 1]:
-                        if level == 0:
-                            text_mod = replace_values_in_text(user_text, [val], mode="delete")
-                        else:
-                            ph = PLACEHOLDER_BY_DIR.get(d, "something")
-                            text_mod = replace_values_in_text(user_text, [val], mode="placeholder", placeholder=ph)
-                        
-                        if normalize_text(text_mod) == normalize_text(user_text):
-                            continue
-                        
-                        # Labels: target val removed -> dir d is missing (1)
-                        labels = {k: 0 for k in DIRS}
-                        labels[d] = 1
-                        
-                        rows_out.append({
-                            "id": f"{turn_uid}::{slot_full}::lvl{level}",
-                            "text": text_mod + QUERY_TOKENS_STR,
-                            "labels": labels,
-                            "split": split_name,
-                            "meta": {
-                                "type": "unresolved",
-                                "level": level,
-                                "target_slot": slot_full,
-                                "target_dir": d,
-                                "removed_value": val
-                            }
-                        })
-                        
-                        if level == 0: # count stats once
-                            dir_counts[d] += 1
-                            slot_counts[slot_full] += 1
-                
-            count += 1
-        
-        # Save
-        out_path = out_dir / f"{split_name}.jsonl"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with out_path.open("w", encoding="utf-8") as f:
-            for r in rows_out:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-                
-        print(f"Saved {len(rows_out)} examples to {out_path}")
-        print("DIR Stats:", dir_counts)
-        print("Top Slots:", slot_counts.most_common(10))
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir", type=str, default="data/raw/multiwoz", help="Input directory containing data.json")
-    parser.add_argument("--out_dir", type=str, default="data/processed/multiwoz/dirunc", help="Output directory")
-    parser.add_argument("--limit", type=int, default=0, help="Limit dialogues per split")
+            records = process_dialogue(dialogue_id, log, split_name)
+            all_records.extend(records)
+
+            for r in records:
+                for d, v in r["labels"].items():
+                    if v:
+                        dir_counts[d] += 1
+
+            count += 1
+
+        out_path = out_dir / f"{split_name}.jsonl"
+        write_jsonl(out_path, all_records)
+
+        print(f"[done] split={split_name}  dialogues={count}  records={len(all_records)}  -> {out_path}")
+        print("  DIR distribution (positive labels):")
+        for d in DIRS:
+            c = dir_counts.get(d, 0)
+            pct = c / max(len(all_records), 1) * 100
+            print(f"    {d:>6}: {c:>8}  ({pct:5.1f}%)")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="MultiWOZ から Natural Missing データを抽出する。")
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default="data/raw/multiwoz",
+        help="MultiWOZ データディレクトリ（data.json を含む）",
+    )
+    parser.add_argument(
+        "--out_dir",
+        type=str,
+        default="data/processed/multiwoz/natural",
+        help="出力ディレクトリ",
+    )
+    parser.add_argument("--limit", type=int, default=0, help="スプリットあたりの最大対話数（0=無制限）")
     args = parser.parse_args()
-    
+
     data_dir = Path(args.data_dir)
     out_dir = Path(args.out_dir)
-    
+
     process_multiwoz(
         data_path=data_dir / "data.json",
         val_list_path=data_dir / "valListFile.json",
         test_list_path=data_dir / "testListFile.json",
         out_dir=out_dir,
-        limit=args.limit
+        limit=args.limit,
     )
+
 
 if __name__ == "__main__":
     main()
