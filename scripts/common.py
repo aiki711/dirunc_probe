@@ -56,7 +56,7 @@ WHERE_KWS = [
     "location", "address", "city", "place", "destination", "origin", "departure",
     "airport", "station", "area", "neighborhood", "venue"
 ]
-WHY_KWS = ["why", "reason", "purpose", "because", "intent"]
+# WHY_KWS = ["why", "reason", "purpose", "because", "intent"]
 HOW_KWS = ["how", "method", "mode", "transport", "payment", "delivery", "format", "via", "type", "option", "ride"]
 HOW_MANY_KWS = ["number", "count", "amount", "quantity", "seats", "riders", "guests", "party_size", "people"]
 HOW_MODE_KWS = ["shared", "private", "mode", "option"]
@@ -69,38 +69,68 @@ WHICH_KWS = [
 
 def map_slot_to_dir(slot_name: str, slot_desc: str) -> str:
     """
-    Maps a slot (name + description) to one of the DIRS (who, what, when, where, why, how, which).
+    スロット名を _ や - で単語に分割し、完全一致で判定する安全なアルゴリズム。
+    部分一致の誤爆（例: account を count と誤認する）を完全に防ぎます。
     """
+    sn = slot_name.lower()
+    # スロット名を _ または - で単語の集合に分割 (例: "account_type" -> {"account", "type"})
+    sn_words = set(re.split(r'[_\\-]', sn))
     s = (slot_name + " " + slot_desc).lower()
 
-    # Priority check
-    if any(k in s for k in WHO_KWS):
-        return "who"
-    if any(k in s for k in WHEN_KWS):
-        return "when"
-    if any(k in s for k in WHERE_KWS):
+    # --- 特殊ルールの事前処理 ---
+    if "phone" in sn_words:
+        return "what"  # phone_number は what に固定
+
+    if "name" in sn_words:
+        # 人物名の場合は WHO、それ以外（hotel_name, car_name 等）は WHAT
+        if sn_words.intersection({"artist", "stylist", "dentist", "doctor", "therapist", "recipient", "receiver", "contact", "person", "user"}):
+            return "who"
+        return "what"
+
+    # booleanフラグ系 (has_wifi, is_unisex, shared_ride など) は WHAT に固定
+    # 説明文のノイズ（例: shared_ride の説明文にある passengers）を回避
+    if sn_words.intersection({"is", "has", "shared", "refundable", "offers"}):
+        return "what"
+
+    # --- Step 1: スロット名（単語完全一致）による絶対優先判定 ---
+    
+    # WHERE (場所)
+    if sn_words.intersection({"address", "city", "location", "destination", "origin", "airport", "station", "venue", "departure", "area", "where"}):
         return "where"
-    if any(k in s for k in WHY_KWS):
-        return "why"
-    if any(k in s for k in WHICH_KWS):
-        return "which"
     
-    # "Which" vs "How" vs "What" can be tricky.
-    # "type" is in HOW_KWS in original code, but often it's "which type".
-    # For now, let's keep original logic for 'how' candidates if they are strong indicators of method.
+    # WHEN (日時)
+    if sn_words.intersection({"date", "time", "day", "year", "month", "duration", "when", "arriveby", "leaveat"}):
+        return "when"
     
-    if any(k in s for k in HOW_KWS):
+    # HOW (金額・数量・程度 / How much, How many)
+    if sn_words.intersection({"price", "fare", "rent", "cost", "amount", "balance", "total", "number", "count", "size", "seats", "pricerange", "how"}):
         return "how"
-    if any(k in s for k in HOW_MANY_KWS):
-        return "how" # or 'how much' ? Original mapped to 'how'
-    if any(k in s for k in HOW_MODE_KWS):
-        return "how"
-        
-    # Check for "which" candidates
-    if any(k in s for k in WHICH_KWS):
+    
+    # WHO (人)
+    if sn_words.intersection({"passengers", "guests", "people", "adults", "children", "travelers", "who", "party"}):
+        return "who"
+    
+    # WHICH (種類・選択)
+    if sn_words.intersection({"type", "category", "rating", "class", "genre", "choice", "option", "internet", "parking", "which"}):
         return "which"
 
-    # fallback
+    # --- Step 2: 説明文を含めたフォールバック判定 ---
+    # ここでも単語境界(\b)を使って安全に判定する
+    def has_kw(kws):
+        pattern = r'\b(?:' + '|'.join(re.escape(k) for k in kws) + r')\b'
+        return bool(re.search(pattern, s))
+
+    if has_kw(WHO_KWS): return "who"
+    if has_kw(WHEN_KWS): return "when"
+    if has_kw(WHERE_KWS): return "where"
+    # why is completely excluded
+    if has_kw(WHICH_KWS): return "which"
+    # HOW_KWS, HOW_MANY_KWS が定義されていれば結合して判定
+    try:
+        if has_kw(HOW_KWS + HOW_MANY_KWS): return "how"
+    except NameError:
+        pass
+
     return "what"
 
 

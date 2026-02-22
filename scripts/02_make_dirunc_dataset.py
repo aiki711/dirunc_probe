@@ -34,6 +34,66 @@ def is_user_turn(turn: Dict[str, Any]) -> bool:
 
 # Removed local text utilities (moved to common.py)
 
+def balance_dataset(rows: List[Dict[str, Any]], seed: int = 42) -> List[Dict[str, Any]]:
+    """
+    マルチラベルデータセットの各ラベル分布が均衡になるようにダウンサンプリングする。
+    """
+    if not rows:
+        return []
+    
+    rng = random.Random(seed)
+    
+    # 各ラベルごとのインデックスを収集
+    label_to_idxs = {d: [] for d in DIRS}
+    for i, row in enumerate(rows):
+        for d in DIRS:
+            if row["labels"].get(d, 0) == 1:
+                label_to_idxs[d].append(i)
+    
+    # 最小のラベル数を確認（ただし0のものは除外）
+    counts = {d: len(idxs) for d, idxs in label_to_idxs.items()}
+    non_zero_counts = [c for c in counts.values() if c > 0]
+    
+    # ターゲット数を決定（存在しないラベルがある場合は、存在する中で最小のものに合わせる）
+    min_count = min(non_zero_counts) if non_zero_counts else 0
+    
+    print(f"  [balance] Original counts: {counts}")
+    print(f"  [balance] Target count per label (min of non-zero): {min_count}")
+    
+    if 0 in counts.values():
+        missing = [d for d, c in counts.items() if c == 0]
+        print(f"  [balance] Warning: Labels {missing} have 0 samples. Balancing among remaining.")
+    
+    selected_idxs = set()
+    
+    # 各ラベルについて、ターゲット数分をサンプリング
+    # マルチレベルなので既に選ばれたインデックスは再利用しつつ、足りない分を補う
+    for d in DIRS:
+        idxs = label_to_idxs[d]
+        # すでに selected_idxs に入っているこのラベルの数
+        already_selected = [idx for idx in idxs if idx in selected_idxs]
+        
+        if len(already_selected) >= min_count:
+            # 既に十分なサンプルがある場合はそのまま（他との兼ね合いで増える可能性はあるが減らさない）
+            continue
+        
+        needed = min_count - len(already_selected)
+        candidates = [idx for idx in idxs if idx not in selected_idxs]
+        rng.shuffle(candidates)
+        selected_idxs.update(candidates[:needed])
+        
+    balanced_rows = [rows[i] for i in sorted(list(selected_idxs))]
+    
+    # 再確認
+    new_counts = {d: 0 for d in DIRS}
+    for r in balanced_rows:
+        for d in DIRS:
+            if r["labels"].get(d, 0) == 1:
+                new_counts[d] += 1
+    print(f"  [balance] Balanced counts: {new_counts}")
+    
+    return balanced_rows
+
 # ---------- SGD extraction ----------
 
 def find_dialogue_files(split_dir: Path) -> List[Path]:
@@ -445,6 +505,7 @@ def main() -> None:
     ap.add_argument("--debug_dir_stats", action="store_true", help="Enable debug prints for dir distributions.")
     ap.add_argument("--debug_topk", type=int, default=30, help="TopK slots to print in debug.")
     ap.add_argument("--contrastive", action="store_true", help="Enable contrastive pair generation (Level1-based).")
+    ap.add_argument("--balance", action="store_true", help="Balance label distribution by downsampling.")
     args = ap.parse_args()
 
     sgd_root = Path(args.sgd_root)
@@ -564,6 +625,9 @@ def main() -> None:
 
             if cfg.max_dialogues_per_split and n_dialogues >= cfg.max_dialogues_per_split:
                 break
+
+        if args.balance:
+            rows_all = balance_dataset(rows_all, seed=cfg.seed)
 
         out_path = out_dir / f"{split}.jsonl"
         write_jsonl(out_path, rows_all)

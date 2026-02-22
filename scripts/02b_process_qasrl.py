@@ -9,9 +9,9 @@
 #
 # ロジック:
 #   各述語（動詞）について、生成された質問のWH疑問詞から DIR 集合（answered_dirs）を求める。
-#   7つの DIRS から answered_dirs を引いた差分 = missing_dirs。
+#   DIRS から answered_dirs を引いた差分 = missing_dirs。
 #   ただし、全 DIR が missing（質問が0件）の述語はスキップする。
-#   また、意味的に必然的でない DIR（why/who/whichなど）のみ missing にならないよう、
+#   また、意味的に必然的でない DIR（who/whichなど）のみ missing にならないよう、
 #   answered がある述語のみを対象とする（質問が1件以上ある述語のみ）。
 #
 # 出力スキーマ（統一 JSONL）:
@@ -54,9 +54,8 @@ WH_MAPPING = {
     "which": "which",
 }
 
-# QA-SRL で「質問が存在しないことが Natural Missing として意味を持つ DIR」
-# why/who/which は文脈なしでは必ずしも Missing と言えないため除外
-MEANINGFUL_MISSING_DIRS = {"who", "what", "when", "where", "how"}
+# why/who/which は文脈なしでは必ずしも Missing と言えないが、QA-SRLでは抽出対象に含める
+MEANINGFUL_MISSING_DIRS = {"who", "what", "when", "where", "why", "how"}
 
 
 def get_dir_from_question(question: str) -> str:
@@ -66,7 +65,7 @@ def get_dir_from_question(question: str) -> str:
 
 
 def get_dir_from_slots(slots: Dict[str, str]) -> str:
-    """questionSlots の wh フィールドから DIR を返す（より正確）。"""
+    """questionSlots の wh フィールド from DIR を返す（より正確）。"""
     wh = slots.get("wh", "").lower()
     return WH_MAPPING.get(wh, "what")
 
@@ -189,8 +188,6 @@ def process_file(
         pct = c / max(len(rows_out), 1) * 100
         print(f"    {d:>6}: {c:>8}  ({pct:5.1f}%)")
 
-
-# ---------- メインエントリ ----------
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="QA-SRL から Natural Missing データを抽出する。")

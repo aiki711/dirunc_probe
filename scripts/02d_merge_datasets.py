@@ -113,7 +113,7 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     rng = random.Random(args.seed)
 
-    for split in ["train", "dev"]:
+    for split in ["train", "dev", "test"]:
         print(f"\n========== {split} ==========")
 
         # --- 各ソースの読み込み ---
