@@ -46,7 +46,7 @@ for LAYER in 2 4 6 8; do
     --lr ${LR} \
     --max_length ${MAX_LENGTH} \
     --mode ${MODE} \
-    --fusion_layers "${LAYER}" \
+    --layer "${LAYER}" \
     --strip_query_in_baseline \
     --save_dir ${OUT_DIR}/cache \
     --no_tqdm \
