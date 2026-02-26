@@ -33,11 +33,8 @@ echo "出力先: ${OUT_DIR}"
 echo "ログ: log/exp4_static_$(date +%Y%m%d_%H%M%S).log"
 echo ""
 
-# OOM対策: キャッシュの強制クリア
-sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null 2>&1 || true
-
 # 実行
-# OOM回避のため --save_dir でディスクキャッシュ処理を有効化する設定を付与
+# OOM回避のため --save_dir でディスクキャッシュ処理を有効化する設定を付与 (元の引数から--save_dirを外したままで実行)
 python scripts/03_train_probe.py \
   --model_name ${MODEL_NAME} \
   --data_dir ${DATA_DIR} \
@@ -50,6 +47,7 @@ python scripts/03_train_probe.py \
   --multilayer \
   --fusion_layers "10,15,20,25" \
   --strip_query_in_baseline \
+  --save_dir ${OUT_DIR}/cache \
   --no_tqdm \
   --seed ${SEED} 2>&1 | tee log/exp4_static_$(date +%Y%m%d_%H%M%S).log
 

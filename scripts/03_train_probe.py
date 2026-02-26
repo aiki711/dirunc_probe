@@ -186,15 +186,25 @@ class JsonlDirUncDataset(Dataset):
     def _filter(rows: List[Dict[str, Any]], fs: FilterSpec) -> List[Dict[str, Any]]:
         out = []
         for r in rows:
-            # Handle missing metadata safely (default to 0)
+            # Handle missing metadata safely (default to 0, handle strings like "natural")
             ph_val = r.get("phase", 0)
-            ph = int(ph_val) if ph_val is not None else 0
+            try:
+                ph = int(ph_val) if ph_val is not None else 0
+            except ValueError:
+                ph = 0
             
             lv_val = r.get("level", 0)
-            lv = int(lv_val) if lv_val is not None else 0
+            try:
+                lv = int(lv_val) if lv_val is not None else 0
+            except ValueError:
+                lv = 0
             
             kv = r.get("k", None)
-            kv_int = None if kv is None else int(kv)
+            try:
+                kv_int = None if kv is None else int(kv)
+            except ValueError:
+                kv_int = None
+
 
             if fs.phases is not None and ph not in fs.phases:
                 continue
@@ -1344,6 +1354,7 @@ def main() -> None:
                 help="Comma-separated services to report per-service dev metrics, e.g., 'Flights_3,RideSharing_1'")
     ap.add_argument("--limit", type=str, default="0", help="Limit train/dev size. Usage: 'train=100,dev=100' or just '100'")
     ap.add_argument("--balance_sampling", action="store_true", help="If limit is set, use balanced sampling across classes.")
+    ap.add_argument("--save_dir", type=str, default=None, help="Directory to save activation cache to avoid OOM.")
     args = ap.parse_args()
 
     set_seed(args.seed)
