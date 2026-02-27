@@ -19,7 +19,7 @@ MODE="query"
 SEED=42
 
 # 対象レイヤーを "2,4,6,8" に変更
-LAYERS="2,4,6,8"
+LAYERS="2,4,6,8,10,12,14,16,18,20,22,24"
 
 # ログディレクトリの作成
 mkdir -p log
@@ -35,7 +35,7 @@ echo ""
 
 # 各レイヤーごとに独立してプローブを学習（--multilayer フラグを使用しない）
 # これにより、各層ごとの最良エポック・予測精度を記録する
-for LAYER in 2 4 6 8; do
+for LAYER in ${LAYERS}; do
   echo ">>> Layer ${LAYER} の学習を開始します..."
   python scripts/03_train_probe.py \
     --model_name ${MODEL_NAME} \
