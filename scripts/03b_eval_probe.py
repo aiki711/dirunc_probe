@@ -98,7 +98,8 @@ def main():
     # Extract activations
     print(f"Extracting activations for layer {args.layer_idx}...")
     X_dict, Y, _ = extract_activations(dl, base, [args.layer_idx], args.mode, device, tokenizer)
-    X = X_dict[args.layer_idx]
+    X = X_dict[args.layer_idx].to(device)
+    Y = Y.to(device)
 
     # Load probe
     hidden_size = shared_model.config.hidden_size
@@ -133,7 +134,22 @@ def main():
 
     # Evaluate
     print("Evaluating...")
-    metrics = evaluate_cached(probe, X, Y, thresholds)
+    with torch.no_grad():
+        logits = probe(X)
+        probs = torch.sigmoid(logits)
+        preds = (probs >= thresholds).float()
+
+    Y_np = Y.cpu().numpy()
+    preds_np = preds.cpu().numpy()
+
+    from sklearn.metrics import f1_score
+    macro_f1 = f1_score(Y_np, preds_np, average="macro", zero_division=0)
+    per_class_f1 = f1_score(Y_np, preds_np, average=None, zero_division=0)
+    
+    metrics = {
+        "macro_f1": float(macro_f1),
+        "per_class_f1": {d: float(per_class_f1[i]) for i, d in enumerate(DIRS)}
+    }
     
     # Save results
     result_file = out_dir / "eval_metrics.json"
@@ -141,7 +157,7 @@ def main():
         json.dump(metrics, f, indent=2)
     
     print(f"Results saved to {result_file}")
-    print(f"Macro F1 (posonly): {metrics['macro_f1_posonly']:.4f}")
+    print(f"Macro F1: {metrics['macro_f1']:.4f}")
 
 if __name__ == "__main__":
     main()
