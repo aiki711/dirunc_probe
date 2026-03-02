@@ -7,7 +7,7 @@ set -euo pipefail
 MODEL="google/gemma-2-2b-it"
 DATA_JSONL="data/processed/mixed/dirunc/train.jsonl"
 EVAL_DATA_JSONL="data/processed/mixed/dirunc/test.jsonl"
-OUT_DIR="runs/exp6_lodo"
+OUT_DIR="runs/balanced/experiment6_lodo"
 LOG_DIR="${OUT_DIR}/logs"
 LAYER_IDX=8 # Set to 8 based on recent experiments, but can be changed
 

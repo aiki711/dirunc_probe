@@ -9,7 +9,7 @@ source dirunc_probe/bin/activate
 
 MODEL_NAME="google/gemma-2-2b-it"
 DATA_DIR="data/processed/mixed/dirunc"
-OUT_DIR="runs/exp4_static"
+OUT_DIR="runs/balanced/experiment4_static"
 
 EPOCHS=3
 BATCH_SIZE=2
