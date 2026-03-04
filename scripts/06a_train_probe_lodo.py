@@ -293,7 +293,7 @@ def main():
             best_weights = {"W": probe.W.detach().cpu(), "b": probe.b.detach().cpu()}
 
     # Save best
-    out_path = Path(args.save_dir) / f"lodo_query_layer{args.layer_idx}.pt"
+    out_path = Path(args.save_dir) / f"lodo_query_layer{args.layer_idx}_{args.test_domain}.pt"
     torch.save(best_weights, out_path)
     print(f"Saved optimized probe to {out_path}")
 

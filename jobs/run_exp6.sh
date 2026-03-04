@@ -35,27 +35,36 @@ echo "--------------------------------------------------------"
 
 for DOMAIN in "${DOMAINS[@]}"; do
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] Starting LODO for hold-out domain: $DOMAIN"
+    EVAL_JSON="${OUT_DIR}/${DOMAIN}_eval.json"
+    MODEL_PATH="${OUT_DIR}/lodo_query_layer${LAYER_IDX}_${DOMAIN}.pt"
+    
+    if [ -f "$EVAL_JSON" ]; then
+        echo "  -> Evaluation JSON ($EVAL_JSON) already exists. Skipping domain $DOMAIN entirely."
+        echo "--------------------------------------------------------"
+        continue
+    fi
+
+    DOMAIN_LOG="${LOG_DIR}/${DOMAIN}.log"
     
     # 1. Train holding out the domain
-    TRAIN_LOG="${LOG_DIR}/${DOMAIN}_train.log"
-    echo "  -> Training... (Log: $TRAIN_LOG)"
-    python3 scripts/06a_train_probe_lodo.py \
-        --model_name "$MODEL" \
-        --data_jsonl "$DATA_JSONL" \
-        --test_domain "$DOMAIN" \
-        --save_dir "$OUT_DIR" \
-        --layer_idx "$LAYER_IDX" \
-        --batch_size 16 \
-        --num_epochs 3 \
-        --neg_sample_prob 0.20 \
-        > "$TRAIN_LOG" 2>&1
+    if [ -f "$MODEL_PATH" ]; then
+        echo "  -> Model weights ($MODEL_PATH) already exist. Skipping Training."
+    else
+        echo "  -> Training... (Log: $DOMAIN_LOG)"
+        python3 scripts/06a_train_probe_lodo.py \
+            --model_name "$MODEL" \
+            --data_jsonl "$DATA_JSONL" \
+            --test_domain "$DOMAIN" \
+            --save_dir "$OUT_DIR" \
+            --layer_idx "$LAYER_IDX" \
+            --batch_size 16 \
+            --num_epochs 3 \
+            --neg_sample_prob 0.20 \
+            >> "$DOMAIN_LOG" 2>&1
+    fi
         
-    MODEL_PATH="${OUT_DIR}/lodo_query_layer${LAYER_IDX}.pt"
-    
     # 2. Evaluate on the held-out domain
-    EVAL_LOG="${LOG_DIR}/${DOMAIN}_eval.log"
-    EVAL_JSON="${OUT_DIR}/${DOMAIN}_eval.json"
-    echo "  -> Evaluating... (Log: $EVAL_LOG)"
+    echo "  -> Evaluating... (Log: $DOMAIN_LOG)"
     python3 scripts/06b_eval_probe_lodo.py \
         --model_name "$MODEL" \
         --data_jsonl "$EVAL_DATA_JSONL" \
@@ -64,7 +73,7 @@ for DOMAIN in "${DOMAINS[@]}"; do
         --layer_idx "$LAYER_IDX" \
         --batch_size 16 \
         --out_json "$EVAL_JSON" \
-        > "$EVAL_LOG" 2>&1
+        >> "$DOMAIN_LOG" 2>&1
         
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] Finished domain: $DOMAIN"
     echo "--------------------------------------------------------"

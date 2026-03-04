@@ -263,8 +263,8 @@ def main():
                 # Information Gain (Delta P)
                 delta_p = p_real - p_null
                 
-                y_true.append(y.cpu().numpy())
-                delta_p_list.append(delta_p.cpu().numpy())
+                y_true.append(y.to(torch.float32).cpu().numpy())
+                delta_p_list.append(delta_p.to(torch.float32).cpu().numpy())
                 
         return np.concatenate(y_true, axis=0), np.concatenate(delta_p_list, axis=0)
 
