@@ -114,9 +114,6 @@ def main():
         with open(pair_file, "r") as f:
             for line in f:
                 pairs.append(json.loads(line))
-                
-        # Limit to 50 pairs for faster statistical validation
-        pairs = pairs[:50]
         
         if not pairs:
             continue

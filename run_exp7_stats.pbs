@@ -1,0 +1,32 @@
+#!/bin/bash
+#PBS -N exp7_stats
+#PBS -q GPU-1
+#PBS -o log/exp7_stats_output.log
+#PBS -e log/exp7_stats_error.log
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
+#PBS -l walltime=04:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p log runs/balanced/experiment7_neurons
+
+echo "=== JOB START ==="
+date
+hostname
+nvidia-smi || true
+
+PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python -u"
+export PYTHONPATH=${PYTHONPATH:-}:.
+
+# Phase 2: Batch Activation Tracking
+echo "[exp7] Running batch activation tracking (Phase 2)..."
+$PYTHON_BIN scripts/07f_verify_corpus_shift.py 2>&1 | tee runs/balanced/experiment7_neurons/realtime_07f.log
+
+# Phase 3: Statistical Analysis & Visualization
+echo "[exp7] Running statistical visualization (Phase 3)..."
+$PYTHON_BIN scripts/07g_visualize_corpus_stats.py > runs/balanced/experiment7_neurons/corpus_stats_report_final.txt
+
+echo "=== JOB END ==="
+date
