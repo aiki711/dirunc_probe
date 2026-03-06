@@ -2,11 +2,10 @@
 # 3ソース（SGD / QA-SRL / MultiWOZ）の Natural Missing データを統合するスクリプト。
 #
 # 処理内容:
-#   1. 各ソースの {train,dev}.jsonl を読み込み
+#   1. 各ソースの {train,dev,test}.jsonl を読み込み
 #   2. QA-SRL が過大な場合は --max_qasrl でダウンサンプリング
-#   3. シャッフルして出力
-#      - train -> data/processed/mixed/train.jsonl
-#      - dev   -> data/processed/mixed/dev.jsonl
+#   3. ラベルの偏りを抑えるため、最小数ラベルに合わせてダウンサンプリング (Measure 1)
+#   4. シャッフルして出力
 #
 # 使用例:
 #   python scripts/02d_merge_datasets.py \
@@ -15,6 +14,7 @@
 #     --multiwoz_dir data/processed/multiwoz/natural \
 #     --out_dir      data/processed/mixed \
 #     --max_qasrl    10000 \
+#     --balance      # ラベルバランスを有効化
 #     --seed         42
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ from common import DIRS, write_jsonl
 # ---------- IO ユーティリティ ----------
 
 def read_jsonl(path: Path) -> List[Dict[str, Any]]:
-    """JSONL ファイルを読み込んでリストで返す。ファイルが存在しない場合は空リスト。"""
     if not path.exists():
         print(f"  [warn] not found: {path}")
         return []
@@ -70,41 +69,60 @@ def print_stats(title: str, rows: List[Dict[str, Any]]) -> None:
         print(f"    {d:>6}: {c:>8}  ({c / max(total, 1) * 100:5.1f}%)")
 
 
+# ---------- バランス調整 (Measure 1) ----------
+
+def balance_dataset(rows: List[Dict[str, Any]], seed: int = 42) -> List[Dict[str, Any]]:
+    """各ラベルの分布が均衡（最小数に合わせる）になるようにダウンサンプリング。"""
+    if not rows:
+        return []
+    
+    rng = random.Random(seed)
+    
+    # 各ラベルごとのインデックスを収集
+    label_to_idxs = {d: [] for d in DIRS}
+    for i, row in enumerate(rows):
+        for d in DIRS:
+            if row["labels"].get(d, 0) == 1:
+                label_to_idxs[d].append(i)
+    
+    # 最小のラベル数を確認（0のものは除外）
+    counts = {d: len(idxs) for d, idxs in label_to_idxs.items()}
+    non_zero_counts = [c for c in counts.values() if c > 0]
+    
+    if not non_zero_counts:
+        return rows # バランス不能
+
+    min_count = min(non_zero_counts)
+    print(f"  [balance] Target count per label: {min_count}")
+    
+    selected_idxs = set()
+    for d in DIRS:
+        idxs = label_to_idxs[d]
+        if not idxs: continue
+        
+        already_selected = [idx for idx in idxs if idx in selected_idxs]
+        if len(already_selected) >= min_count:
+            continue
+        
+        needed = min_count - len(already_selected)
+        candidates = [idx for idx in idxs if idx not in selected_idxs]
+        rng.shuffle(candidates)
+        selected_idxs.update(candidates[:needed])
+        
+    return [rows[i] for i in sorted(list(selected_idxs))]
+
+
 # ---------- メイン ----------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="3ソースの Natural Missing データを統合する。")
-    parser.add_argument(
-        "--sgd_dir",
-        type=str,
-        default="data/processed/sgd/natural",
-        help="SGD Natural データディレクトリ",
-    )
-    parser.add_argument(
-        "--qasrl_dir",
-        type=str,
-        default="data/processed/qasrl/natural",
-        help="QA-SRL Natural データディレクトリ",
-    )
-    parser.add_argument(
-        "--multiwoz_dir",
-        type=str,
-        default="data/processed/multiwoz/natural",
-        help="MultiWOZ Natural データディレクトリ",
-    )
-    parser.add_argument(
-        "--out_dir",
-        type=str,
-        default="data/processed/mixed",
-        help="出力ディレクトリ",
-    )
-    parser.add_argument(
-        "--max_qasrl",
-        type=int,
-        default=0,
-        help="train における QA-SRL の上限レコード数（0=無制限）",
-    )
-    parser.add_argument("--seed", type=int, default=42, help="シャッフル用乱数シード")
+    parser = argparse.ArgumentParser(description="3ソースのデータを統合し、ラベルバランスを調整する。")
+    parser.add_argument("--sgd_dir", type=str, default="data/processed/sgd/natural")
+    parser.add_argument("--qasrl_dir", type=str, default="data/processed/qasrl/natural")
+    parser.add_argument("--multiwoz_dir", type=str, default="data/processed/multiwoz/natural")
+    parser.add_argument("--out_dir", type=str, default="data/processed/mixed")
+    parser.add_argument("--max_qasrl", type=int, default=10000, help="QA-SRLの上限レコード数")
+    parser.add_argument("--balance", action="store_true", help="ラベルバランスを有効化するか")
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     sgd_dir = Path(args.sgd_dir)
@@ -115,39 +133,29 @@ def main() -> None:
 
     for split in ["train", "dev", "test"]:
         print(f"\n========== {split} ==========")
-
-        # --- 各ソースの読み込み ---
         sgd_rows = read_jsonl(sgd_dir / f"{split}.jsonl")
         qasrl_rows = read_jsonl(qasrl_dir / f"{split}.jsonl")
         multiwoz_rows = read_jsonl(multiwoz_dir / f"{split}.jsonl")
 
-        print(f"  SGD:      {len(sgd_rows):>8} records")
-        print(f"  QA-SRL:   {len(qasrl_rows):>8} records")
-        print(f"  MultiWOZ: {len(multiwoz_rows):>8} records")
+        print(f"  Raw: SGD={len(sgd_rows)}, QA-SRL={len(qasrl_rows)}, MultiWOZ={len(multiwoz_rows)}")
 
-        # --- QA-SRL のダウンサンプリング（train のみ） ---
         if split == "train" and args.max_qasrl > 0 and len(qasrl_rows) > args.max_qasrl:
-            rng_sample = random.Random(args.seed)
-            qasrl_rows = rng_sample.sample(qasrl_rows, args.max_qasrl)
-            print(f"  QA-SRL (after downsample): {len(qasrl_rows):>8} records")
+            random.Random(args.seed).shuffle(qasrl_rows)
+            qasrl_rows = qasrl_rows[:args.max_qasrl]
+            print(f"  QA-SRL (after max_qasrl): {len(qasrl_rows)}")
 
-        # --- 結合 ---
         all_rows = sgd_rows + qasrl_rows + multiwoz_rows
+        if not all_rows: continue
 
-        if not all_rows:
-            print(f"  [warn] No records for split={split}, skipping.")
-            continue
+        if args.balance:
+            all_rows = balance_dataset(all_rows, seed=args.seed)
+            print(f"  After balancing: {len(all_rows)}")
 
-        # --- シャッフル ---
         rng.shuffle(all_rows)
-
-        # --- 出力 ---
         out_path = out_dir / f"{split}.jsonl"
         write_jsonl(out_path, all_rows)
-
         print_stats(f"mixed/{split}.jsonl", all_rows)
-        print(f"\n  -> Saved {len(all_rows)} records to {out_path}")
-
+        print(f"  -> Saved to {out_path}")
 
 if __name__ == "__main__":
     main()

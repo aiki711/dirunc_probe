@@ -1,0 +1,145 @@
+#!/bin/bash
+#PBS -N exp6_lodo
+#PBS -q GPU-1
+#PBS -o log/exp6_lodo_output.log
+#PBS -e log/exp6_lodo_error.log
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
+#PBS -l walltime=24:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p log runs/balanced/experiment6_lodo
+
+echo "=== JOB START ==="
+date
+hostname
+nvidia-smi || true
+
+# Environment Setup
+PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python -u"
+export PYTHONPATH=${PYTHONPATH:-}:.
+if [ -f .hf_token ]; then
+    export HF_TOKEN=$(cat .hf_token)
+fi
+
+# --- (optional) if CUDA torch is not installed, this won't use GPU ---
+$PYTHON_BIN -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
+
+# 1. Conditional Data Preparation
+MIXED_DATA="data/processed/mixed/dirunc/train.jsonl"
+
+if [ -f "$MIXED_DATA" ]; then
+    echo "[skip] Processed data already exists: $MIXED_DATA"
+else
+    echo "[data] Starting data generation pipeline..."
+    
+    # Fetch datasets
+    $PYTHON_BIN scripts/archive/00_fetch_sgd.py
+    $PYTHON_BIN scripts/archive/00_fetch_multiwoz.py
+    $PYTHON_BIN scripts/archive/00_fetch_qasrl.py
+    
+    # Build required slots
+    $PYTHON_BIN scripts/archive/01_build_required_slots.py
+    
+    # Process individual sources to create natural missing datasets
+    # Note: Using the specific scripts mentioned in the repo
+    $PYTHON_BIN scripts/02a_process_sgd.py
+    $PYTHON_BIN scripts/02b_process_qasrl.py
+    $PYTHON_BIN scripts/02c_process_multiwoz.py
+    
+    # Merge datasets into mixed/dirunc
+    # Adjusting paths to match what scripts/02d_merge_datasets.py expects and what process scripts output
+    # By default 02a outputs to data/processed/sgd/natural
+    # By default 02b outputs to data/processed/qasrl/natural
+    # By default 02c outputs to data/processed/multiwoz/natural
+    # 02d defaults match these.
+    $PYTHON_BIN scripts/02d_merge_datasets.py \
+        --sgd_dir data/processed/sgd/natural \
+        --qasrl_dir data/processed/qasrl/natural \
+        --multiwoz_dir data/processed/multiwoz/natural \
+        --out_dir data/processed/mixed/dirunc \
+        --max_qasrl 10000 \
+        --balance
+        
+    echo "[data] Creating unified all.jsonl for LODO..."
+    cat data/processed/mixed/dirunc/train.jsonl data/processed/mixed/dirunc/dev.jsonl data/processed/mixed/dirunc/test.jsonl > data/processed/mixed/dirunc/all.jsonl
+    
+    echo "[data] Data generation complete. Total samples: $(wc -l < data/processed/mixed/dirunc/all.jsonl)"
+fi
+
+# 2. LODO Experiment Loop
+MODEL="google/gemma-2-2b-it"
+DATA_JSONL="data/processed/mixed/dirunc/all.jsonl"
+EVAL_DATA_JSONL="data/processed/mixed/dirunc/all.jsonl"
+OUT_DIR="runs/balanced/experiment6_lodo"
+LAYER_IDX=8
+
+DOMAINS=(
+  "multiwoz_hotel"
+  "multiwoz_restaurant"
+  "sgd_Events_2"
+  "multiwoz_attraction"
+  "sgd_Restaurants_1"
+  "multiwoz_train"
+  "sgd_Events_1"
+  "sgd_Media_1"
+  "sgd_RideSharing_2"
+  "sgd_Banks_1"
+)
+
+echo "Starting Experiment 6 LODO Cross-Validation"
+echo "Model: $MODEL"
+echo "Layer: $LAYER_IDX"
+echo "--------------------------------------------------------"
+
+for DOMAIN in "${DOMAINS[@]}"; do
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] Hold-out domain: $DOMAIN"
+    EVAL_JSON="${OUT_DIR}/${DOMAIN}_eval.json"
+    MODEL_PATH="${OUT_DIR}/lodo_query_layer${LAYER_IDX}_${DOMAIN}.pt"
+    
+    if [ -f "$EVAL_JSON" ]; then
+        echo "  -> Skip: $EVAL_JSON already exists."
+        continue
+    fi
+
+    # a. Train holding out the domain
+    if [ -f "$MODEL_PATH" ]; then
+        echo "  -> Skip: $MODEL_PATH already exists."
+    else
+        echo "  -> Training..."
+        $PYTHON_BIN scripts/06a_train_probe_lodo.py \
+            --model_name "$MODEL" \
+            --data_jsonl "$DATA_JSONL" \
+            --test_domain "$DOMAIN" \
+            --save_dir "$OUT_DIR" \
+            --layer_idx "$LAYER_IDX" \
+            --batch_size 16 \
+            --num_epochs 3 \
+            --neg_sample_prob 0.20 2>&1 | tee -a "$OUT_DIR/realtime.log"
+    fi
+        
+    # b. Evaluate on the held-out domain
+    echo "  -> Evaluating..."
+    $PYTHON_BIN scripts/06b_eval_probe_lodo.py \
+        --model_name "$MODEL" \
+        --data_jsonl "$EVAL_DATA_JSONL" \
+        --test_domain "$DOMAIN" \
+        --model_path "$MODEL_PATH" \
+        --layer_idx "$LAYER_IDX" \
+        --batch_size 16 \
+        --out_json "$EVAL_JSON"
+        
+    echo "--------------------------------------------------------"
+done
+
+# 3. Aggregate Results
+SUMMARY_JSON="${OUT_DIR}/summary_lodo_exp6.json"
+echo "[$(date +'%Y-%m-%d %H:%M:%S')] Aggregating results to $SUMMARY_JSON..."
+$PYTHON_BIN scripts/06c_aggregate_lodo.py \
+    --results_dir "$OUT_DIR" \
+    --out_summary "$SUMMARY_JSON"
+
+echo "=== JOB END ==="
+date

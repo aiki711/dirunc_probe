@@ -46,7 +46,9 @@ def extract_domain_from_id(sample_id: str) -> Optional[str]:
     if source == "sgd" and len(parts) > 3:
         return f"sgd_{parts[3]}"
     elif source == "multiwoz" and len(parts) > 2:
-        return f"multiwoz_{parts[2]}"
+        # Handles "domain_restaurant" -> "restaurant"
+        dom_name = parts[2].replace("domain_", "")
+        return f"multiwoz_{dom_name}"
     return None
 
 def micro_macro_f1(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, Any]:
@@ -265,11 +267,14 @@ def main():
     best_loss = float("inf")
     best_weights = None
 
+    total_steps = len(dl)
+    print_interval = max(1, total_steps // 5)
+
     for epoch in range(args.num_epochs):
         epoch_loss = 0.0
         print(f"--- Epoch {epoch+1}/{args.num_epochs} ---", flush=True)
         
-        for step, batch in enumerate(tqdm(dl, desc=f"Epoch {epoch+1}", mininterval=10)):
+        for step, batch in enumerate(dl):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             y = batch["y"].to(device)
@@ -282,10 +287,11 @@ def main():
             
             epoch_loss += loss.item()
 
-            if (step + 1) % 500 == 0:
-                print(f"Epoch {epoch+1} | Step {step+1}/{len(dl)} | Loss: {loss.item():.4f}", flush=True)
+            if (step + 1) % print_interval == 0 or (step + 1) == total_steps:
+                pct = ((step + 1) / total_steps) * 100
+                print(f"Epoch {epoch+1} | Step {step+1}/{total_steps} ({pct:.0f}%) | Loss: {loss.item():.4f}", flush=True)
 
-        avg_loss = epoch_loss / len(dl)
+        avg_loss = epoch_loss / total_steps
         print(f"Epoch {epoch+1} Avg Loss: {avg_loss:.4f}\n", flush=True)
 
         if avg_loss < best_loss:

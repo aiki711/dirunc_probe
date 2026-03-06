@@ -30,7 +30,9 @@ def extract_domain_from_id(sample_id: str) -> Optional[str]:
     if source == "sgd" and len(parts) > 3:
         return f"sgd_{parts[3]}"
     elif source == "multiwoz" and len(parts) > 2:
-        return f"multiwoz_{parts[2]}"
+        # Handles "domain_restaurant" -> "restaurant"
+        dom_name = parts[2].replace("domain_", "")
+        return f"multiwoz_{dom_name}"
     return None
 
 def find_best_threshold_for_delta(y_true: np.ndarray, delta_p: np.ndarray) -> Dict[str, Any]:
