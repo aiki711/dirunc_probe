@@ -3,6 +3,7 @@ import json
 from transformers import AutoTokenizer, AutoModel
 import sys
 import os
+from pathlib import Path
 
 # Add the project root to sys.path
 sys.path.append(os.getcwd())
@@ -69,6 +70,10 @@ def main():
         raw_pairs = json.load(f)
         # Convert list to dict mapping label -> pair
         pairs_data = {p["label"]: p for p in raw_pairs}
+    
+    output_dir = Path("runs/balanced/experiment8_causal")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    results = []
 
     print("\n" + "="*80)
     print("EXPERIMENT 8B: CAUSAL PATCHING (STATE TRANSPLANTATION)")
@@ -121,6 +126,19 @@ def main():
                 alert = "[!] Crosstalk" if d != target_label and abs(diff) > 5.0 else ""
                 
                 print(f"{d:<10} | {b_p:>8.2f}%          | {p_p:>8.2f}%              | {diff:>6.2f}% {marker} {alert}")
+
+            results.append({
+                "target_label": target_label,
+                "neuron_idx": neuron_idx,
+                "description": desc,
+                "patch_value": patch_value,
+                "base_probs_A": base_probs_A,
+                "patched_probs_A": patched_probs_A
+            })
+
+    with open(output_dir / "patching_results.json", "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"\nSaved patching results to {output_dir / 'patching_results.json'}")
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,25 @@
+#!/bin/bash
+#PBS -N exp9_visuals
+#PBS -q GPU-1
+#PBS -o log/exp9_visuals_output.log
+#PBS -e log/exp9_visuals_error.log
+#PBS -l select=1:ncpus=8:ngpus=1:mem=32gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p log
+mkdir -p runs/balanced/experiment9_visuals
+
+PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python -u"
+export PYTHONPATH=${PYTHONPATH:-}:.
+
+echo "=== EXPERIMENT 9: DATA EXTRACTION ==="
+$PYTHON_BIN scripts/09a_extract_trajectory.py
+
+echo -e "\n=== EXPERIMENT 9: PLOTTING VISUALS ==="
+$PYTHON_BIN scripts/09b_plot_visuals.py
+
+echo -e "\n=== EXPERIMENT 9: DONE ==="

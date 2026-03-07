@@ -3,6 +3,7 @@ import json
 from transformers import AutoTokenizer, AutoModel
 import sys
 import os
+from pathlib import Path
 
 # Add the project root to sys.path
 sys.path.append(os.getcwd())
@@ -81,6 +82,9 @@ def main():
         print("Error: 'how' label data not found in shift_pairs.json")
         return
 
+    output_dir = Path("runs/balanced/experiment8_causal")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     pair = pairs_data["how"]
     text_A = pair["A"] # Missing
     text_B = pair["B"] # Filled
@@ -131,6 +135,25 @@ def main():
             diff = i_p - b_p
             marker = "<-- TARGET" if d == "how" else ""
             print(f"{d:<10} | {b_p:>8.2f}%       | {i_p:>8.2f}%           | {diff:>6.2f}% {marker}")
+
+        results_how = {
+            "weight_analysis": {
+                "neuron_idx": how_neuron_idx,
+                "weight_value": w_val
+            },
+            "tracing_data": {
+                "tokens": tokens,
+                "activations": activations.tolist()
+            },
+            "injection_results": {
+                "injection_value": injection_value,
+                "base_probs": base_probs,
+                "injected_probs": injected_probs
+            }
+        }
+        with open(output_dir / "how_mechanism_results.json", "w") as f:
+            json.dump(results_how, f, indent=2)
+        print(f"\nSaved HOW mechanism results to {output_dir / 'how_mechanism_results.json'}")
 
 if __name__ == "__main__":
     main()
