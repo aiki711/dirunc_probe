@@ -66,7 +66,9 @@ def main():
     b = weights["b"].to(device)
     
     with open(pairs_path, "r") as f:
-        pairs_data = json.load(f)
+        raw_pairs = json.load(f)
+        # Convert list to dict mapping label -> pair
+        pairs_data = {p["label"]: p for p in raw_pairs}
 
     print("\n" + "="*80)
     print("EXPERIMENT 8B: CAUSAL PATCHING (STATE TRANSPLANTATION)")
@@ -76,8 +78,8 @@ def main():
         if target_label not in pairs_data: continue
         
         pair = pairs_data[target_label]
-        text_A = pair["A"]["text"]
-        text_B = pair["B"]["text"]
+        text_A = pair["A"]
+        text_B = pair["B"]
         
         print(f"\n>>> Target: {desc}")
         print(f"    Label: {target_label.upper()}, Neuron: n{neuron_idx}")
@@ -91,7 +93,7 @@ def main():
             if not pos_map_B: continue
             
             # Extract the target activation from [B]
-            patch_value = float(hs_B[0, pos_map_B[target_label], neuron_idx].cpu().numpy())
+            patch_value = float(hs_B[0, pos_map_B[target_label], neuron_idx].to(torch.float32).cpu().numpy())
             print(f"    Extracted Patch Value from [B]: {patch_value:.3f}")
             
             # 2. Forward pass [A] Missing

@@ -70,7 +70,9 @@ def main():
     b = weights["b"].to(device)
     
     with open(pairs_path, "r") as f:
-        pairs_data = json.load(f)
+        raw_pairs = json.load(f)
+        # Convert list to dict mapping label -> pair
+        pairs_data = {p["label"]: p for p in raw_pairs}
 
     print("\n" + "="*80)
     print("EXPERIMENT 8A: CAUSAL ABLATION (KNOCK-OUT)")
@@ -80,7 +82,7 @@ def main():
         if target_label not in pairs_data: continue
         
         pair = pairs_data[target_label]
-        text_A = pair["A"]["text"]
+        text_A = pair["A"]
         
         print(f"\n>>> Target: {desc}")
         print(f"    Label: {target_label.upper()}, Neuron: n{neuron_idx}")

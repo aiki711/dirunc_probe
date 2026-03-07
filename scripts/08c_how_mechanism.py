@@ -65,7 +65,7 @@ def main():
     print("APPROACH 2: PROBE WEIGHT SIGN CHECK")
     print("="*80)
     how_idx = DIRS.index("how")
-    w_val = float(W[how_idx, how_neuron_idx].cpu().numpy())
+    w_val = float(W[how_idx, how_neuron_idx].to(torch.float32).cpu().numpy())
     print(f"Probe Weight W[how, n{how_neuron_idx}]: {w_val:.6f}")
     if w_val < 0:
         print(">> RESULT: Weight is NEGATIVE. Firing (Activation increase) decreases missing probability.")
@@ -74,15 +74,16 @@ def main():
         print(">> RESULT: Weight is POSITIVE. Direct correlation with missing state.")
 
     with open(pairs_path, "r") as f:
-        pairs_data = json.load(f)
+        raw_pairs = json.load(f)
+        pairs_data = {p["label"]: p for p in raw_pairs}
     
     if "how" not in pairs_data:
         print("Error: 'how' label data not found in shift_pairs.json")
         return
 
     pair = pairs_data["how"]
-    text_A = pair["A"]["text"] # Missing
-    text_B = pair["B"]["text"] # Filled
+    text_A = pair["A"] # Missing
+    text_B = pair["B"] # Filled
 
     # --- Approach 1: Token-level Tracing ---
     print("\n" + "="*80)
@@ -94,7 +95,7 @@ def main():
         out = lm(**enc, output_hidden_states=True)
         hs = out.hidden_states[layer_idx + 1] # [1, seq_len, hidden_size]
         
-        activations = hs[0, :, how_neuron_idx].cpu().numpy()
+        activations = hs[0, :, how_neuron_idx].to(torch.float32).cpu().numpy()
         
         print(f"{'Token':<20} | {'Activation (n625)':<20}")
         print("-" * 45)
