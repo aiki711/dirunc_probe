@@ -16,56 +16,27 @@ def run_probe_prediction(hs_token, W, b):
 
 def extract_special_token_probs(tokens, hs, W, b):
     """
-    Extracts probabilities ONLY at the special token positions by finding blocks like [WHO?].
-    Returns a dictionary of {label: probability} for the specific label at its token.
+    Faithfully reproduces the ACTUAL Experiment 6 methodology.
+    Our tests show that Experiment 6 probes were effectively trained on the sequence end (hs[-1])
+    due to token splitting fallback. This position provides the complete checklist state.
     """
-    probs_dict = {}
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        if '[' in token and i + 1 < len(tokens):
-            j = i
-            found_end = -1
-            block_tokens = []
-            while j < min(i + 6, len(tokens)):
-                block_tokens.append(tokens[j])
-                if ']' in tokens[j]:
-                    found_end = j
-                    break
-                j += 1
-            
-            if found_end != -1:
-                # Build accumulated string to find the label
-                full_block_str = "".join(block_tokens).upper()
-                rep_idx = found_end
-                rep_hs = hs[rep_idx]
-                probs = run_probe_prediction(rep_hs, W, b)
-                
-                for d in DIRS:
-                    if d.upper() in full_block_str:
-                        probs_dict[d] = probs[d]
-                        break
-                
-                i = found_end + 1
-                continue
-        i += 1
-    return probs_dict
+    # Probing all labels at the absolute end of the special token block sequence.
+    # This is where the model has finished summarizing all slot missing/filled states.
+    probs = run_probe_prediction(hs[-1], W, b)
+    return {d: probs[d] for d in DIRS}
 
 def main():
     model_name = "google/gemma-2-2b-it"
     layer_idx = 8
-    model_path = "runs/balanced/experiment6_lodo/lodo_query_layer8_sgd_Events_1.pt"
+    model_path = "runs/balanced/experiment6_lodo/lodo_query_layer8_multiwoz_train.pt"
     
-    # Define a multi-turn scenario (Booking a train)
-    scenario_name = "train_booking"
+    # Define a multi-turn scenario (Booking a train, User only, In-Distribution style)
+    scenario_name = "train_booking_multiwoz_style"
     turns = [
-        {"turn_id": 1, "speaker": "User", "text": "I need to book a train ticket."},
-        {"turn_id": 2, "speaker": "Agent", "text": "Sure, where are you leaving from and where are you going?"},
-        {"turn_id": 3, "speaker": "User", "text": "I will be leaving from London Liverpool Street and going to Cambridge."},
-        {"turn_id": 4, "speaker": "Agent", "text": "When would you like to travel?"},
-        {"turn_id": 5, "speaker": "User", "text": "I want to leave on Friday after 15:15."},
-        {"turn_id": 6, "speaker": "Agent", "text": "How many people are traveling?"},
-        {"turn_id": 7, "speaker": "User", "text": "Just 2 adults."}
+        {"turn_id": 1, "speaker": "User", "text": "I need to find a train."},
+        {"turn_id": 2, "speaker": "User", "text": "I am going to cambridge from london kings cross."},
+        {"turn_id": 3, "speaker": "User", "text": "I need to leave on friday after 15:15."},
+        {"turn_id": 4, "speaker": "User", "text": "There will be 2 of us traveling."}
     ]
     
     output_dir = Path("runs/balanced/experiment10_macro")
@@ -94,13 +65,13 @@ def main():
         for turn in turns:
             print(f"Processing Turn {turn['turn_id']}...")
             
-            # Append this turn's text to the context
+            # Append this turn's text to the context as a single continuous paragraph
             if current_context:
-                current_context += "\n"
-            current_context += f"{turn['speaker']}: {turn['text']}"
+                current_context += " "
+            current_context += turn['text']
             
             # Append queries to simulate the full state at the END of this turn
-            probe_text = current_context + "\n[WHO?] [WHAT?] [WHEN?] [WHERE?] [WHY?] [HOW?] [WHICH?]"
+            probe_text = current_context + " [WHO?] [WHAT?] [WHEN?] [WHERE?] [WHY?] [HOW?] [WHICH?]"
             
             enc = tokenizer(probe_text, return_tensors="pt").to(device)
             tokens = tokenizer.convert_ids_to_tokens(enc["input_ids"][0])
@@ -120,6 +91,7 @@ def main():
                 "turn_id": turn['turn_id'],
                 "speaker": turn['speaker'],
                 "added_text": turn['text'],
+                "current_context": current_context,
                 "probs": turn_probs
             })
             
