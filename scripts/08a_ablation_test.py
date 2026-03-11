@@ -51,13 +51,19 @@ def main():
     
     ablation_value = -10.0 # Force severe suppression
     
-    # Define targets based on Experiment 7 statistical results:
+    # Define targets based on Experiment 7 statistical results (All labels):
     # (Label to apply ablation on, Neuron Index, Description)
     targets = [
-        ("where", 100, "Specialized WHERE neuron"),
-        ("who", 742, "Specialized WHO neuron"),
-        ("when", 1725, "General Attribute neuron (Found in WHEN/WHAT)"),
-        ("where", 731, "General Spatial/Temporal neuron (Found in WHERE/WHEN)")
+        # --- WHO / WHEN / WHERE (original targets) ---
+        ("where", 100,  "Specialized WHERE neuron (n100, p=1e-06)"),
+        ("where", 731,  "General Spatial/Temporal neuron (n731, p=1e-29, shared with WHEN)"),
+        ("who",   742,  "Specialized WHO neuron (n742, p=4e-08)"),
+        ("when",  1725, "General Attribute neuron (n1725, p=1e-30, shared with WHAT)"),
+        # --- WHAT / HOW / WHICH (newly added) ---
+        ("what",  1725, "General Attribute neuron WHAT side (n1725, p=8e-05, shared with WHEN)"),
+        ("how",   625,  "HOW-specific neuron (n625, p=2e-21, FIRES on fill -- reverse pattern)"),
+        ("how",   2116, "HOW suppression neuron (n2116, p=4e-03)"),
+        ("which", 1306, "WHICH suppression neuron (n1306, p=1e-07)"),
     ]
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
