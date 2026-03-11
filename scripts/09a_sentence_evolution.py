@@ -28,15 +28,15 @@ def extract_special_token_probs(tokens, hs, W, b):
 def main():
     model_name = "google/gemma-2-2b-it"
     layer_idx = 8
-    model_path = "runs/balanced/experiment6_lodo/lodo_query_layer8_multiwoz_train.pt"
+    model_path = "runs/balanced/experiment6_lodo/lodo_query_layer8_multiwoz_restaurant.pt"
     
-    # Define a multi-turn scenario (Booking a train, User only, In-Distribution style)
-    scenario_name = "train_booking_multiwoz_style"
+    # Restaurant booking scenario: WHEN is clearly missing until T3
+    scenario_name = "restaurant_booking_multiwoz_style"
     turns = [
-        {"turn_id": 1, "speaker": "User", "text": "I need to find a train."},
-        {"turn_id": 2, "speaker": "User", "text": "I am going to cambridge from london kings cross."},
-        {"turn_id": 3, "speaker": "User", "text": "I need to leave on friday after 15:15."},
-        {"turn_id": 4, "speaker": "User", "text": "There will be 2 of us traveling."}
+        {"turn_id": 1, "speaker": "User", "text": "I need to book a table at a restaurant."},
+        {"turn_id": 2, "speaker": "User", "text": "I am looking for a restaurant in the centre of Cambridge."},
+        {"turn_id": 3, "speaker": "User", "text": "I need a table for Saturday at 18:30."},
+        {"turn_id": 4, "speaker": "User", "text": "There will be 4 of us."}
     ]
     
     output_dir = Path("runs/balanced/experiment9_sentence")

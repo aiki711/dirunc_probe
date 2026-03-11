@@ -93,16 +93,16 @@ def main():
     ax.set_xlabel("Dialogue Turn", fontsize=14, fontweight="bold")
     ax.set_ylim(-0.05, 1.05)
     
-    # Empirical Thresholds from Experiment 6
-    # (WHO is set to 0.15 provisionally for visualization as requested)
+    # Empirical Thresholds
+    # (WHEN is set to 0.40 to reflect the restaurant probe's range; WHO 0.15 provisional)
     THRESHOLDS = {
         "WHO": 0.15,
         "WHAT": 0.55,
-        "WHEN": 0.1,
+        "WHEN": 0.40,
         "WHERE": 0.35,
         "HOW": 0.25,
         "WHICH": 0.45,
-        "WHY": 0.0
+        "WHY": 0.00,
     }
     
     # Get colors used in lineplot to match threshold lines
