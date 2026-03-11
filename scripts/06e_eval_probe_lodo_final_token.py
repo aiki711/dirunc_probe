@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
-from common import DIRS, QUERY_LABEL_STR, QUERY_TOKENS_STR
+from common import DIRS, QUERY_LABEL_STR, SPECIAL_TOKENS, QUERY_TOKENS_STR, strip_query_tokens
 
 # ---------------- Utils ----------------
 
@@ -119,12 +119,12 @@ class EvaluatorDataset(Dataset):
     def __getitem__(self, idx):
         r = self.rows[idx]
         y = torch.tensor([float(r["labels"].get(d, 0)) for d in DIRS], dtype=torch.float32)
-        return {"text": r["text"], "y": y}
+        return {"text": strip_query_tokens(r["text"]).strip(), "y": y}
 
 def collate_dual_batch(tokenizer, batch: List[Dict[str, Any]], max_length: int) -> Dict[str, Any]:
     texts_real = [x["text"] for x in batch]
-    # Zero-input text (only query tokens)
-    texts_null = [QUERY_TOKENS_STR.strip()] * len(batch)
+    # Zero-input text (empty context for baseline)
+    texts_null = [""] * len(batch)
     
     labels = torch.stack([x["y"] for x in batch])
     
@@ -157,11 +157,10 @@ class ProbeModelBase(nn.Module):
         idx = layer_idx + 1 if layer_idx >= 0 else len(hidden_states) + layer_idx
         return hidden_states[idx]
 
-class QueryTokenProbe(nn.Module):
-    def __init__(self, base: ProbeModelBase, tokenizer: Any, weights_path: str) -> None:
+class FinalTokenProbe(nn.Module):
+    def __init__(self, base: ProbeModelBase, weights_path: str) -> None:
         super().__init__()
         self.base = base
-        self.token_id = {d: tokenizer.convert_tokens_to_ids(tstr) for d, tstr in QUERY_LABEL_STR.items()}
         
         w_dict = torch.load(weights_path, map_location="cpu")
         self.W = nn.Parameter(w_dict["W"].to(base.output_dtype))
@@ -180,21 +179,12 @@ class QueryTokenProbe(nn.Module):
                  logits_list.append(torch.zeros(len(DIRS), device=input_ids.device))
                  continue
                  
-            ids_list = input_ids[bi, valid_indices].tolist()
             h_vec = hs[bi, valid_indices, :]
             
-            dir_vecs = []
-            for d in DIRS:
-                tid = self.token_id[d]
-                pos = None
-                for j in range(len(ids_list) - 1, -1, -1):
-                    if ids_list[j] == tid:
-                        pos = j
-                        break
-                vec = h_vec[pos] if pos is not None else h_vec[-1]
-                dir_vecs.append(vec)
+            # Use final token
+            vec = h_vec[-1]
+            H = vec.unsqueeze(0).expand(len(DIRS), -1)  # (7, hidden)
             
-            H = torch.stack(dir_vecs, dim=0)
             logit = (H * self.W).sum(dim=1) + self.b
             logits_list.append(logit)
             
@@ -223,9 +213,6 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     tokenizer.padding_side = "right"
     if tokenizer.pad_token_id is None: tokenizer.pad_token = tokenizer.eos_token
-    
-    # <-- Single Tokenization Fix -->
-    tokenizer.add_special_tokens({"additional_special_tokens": SPECIAL_TOKENS})
 
     all_rows = read_jsonl(Path(args.data_jsonl))
     
@@ -246,7 +233,7 @@ def main():
     dev_rows = test_rows[:split_idx]
     eval_rows = test_rows[split_idx:]
 
-    def get_predictions(rows: List[Dict[str, Any]], probe: QueryTokenProbe) -> Tuple[np.ndarray, np.ndarray]:
+    def get_predictions(rows: List[Dict[str, Any]], probe: FinalTokenProbe) -> Tuple[np.ndarray, np.ndarray]:
         ds = EvaluatorDataset(rows)
         dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, 
                         collate_fn=lambda b: collate_dual_batch(tokenizer, b, max_length=1024))
@@ -275,12 +262,8 @@ def main():
 
     print("Initializing model...")
     base = ProbeModelBase(args.model_name).to(device)
-    
-    # <-- Single Tokenization Fix -->
-    base.lm.resize_token_embeddings(len(tokenizer))
-    
     base.lm.eval()
-    probe = QueryTokenProbe(base, tokenizer, args.model_path).to(device)
+    probe = FinalTokenProbe(base, args.model_path).to(device)
     
     print("\n[Phase 1] Tuning Thresholds on Dev Split...")
     y_dev, dp_dev = get_predictions(dev_rows, probe)

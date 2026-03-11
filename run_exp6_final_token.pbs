@@ -1,0 +1,101 @@
+#!/bin/bash
+#PBS -N exp6_final_tok
+#PBS -q GPU-1
+#PBS -o log/exp6_final_tok_output.log
+#PBS -e log/exp6_final_tok_error.log
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
+#PBS -l walltime=24:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p log runs/balanced/experiment6_final_token
+
+echo "=== JOB START (FINAL TOKEN ABLATION) ==="
+date
+hostname
+nvidia-smi || true
+
+# Environment Setup
+PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python -u"
+export PYTHONPATH=${PYTHONPATH:-}:.
+if [ -f .hf_token ]; then
+    export HF_TOKEN=$(cat .hf_token)
+fi
+
+$PYTHON_BIN -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
+
+# Using existing unified dataset
+DATA_JSONL="data/processed/mixed/dirunc/all.jsonl"
+OUT_DIR="runs/balanced/experiment6_final_token"
+MODEL="google/gemma-2-2b-it"
+LAYER_IDX=8
+
+DOMAINS=(
+  "multiwoz_hotel"
+  "multiwoz_restaurant"
+  "sgd_Events_2"
+  "multiwoz_attraction"
+  "sgd_Restaurants_1"
+  "multiwoz_train"
+  "sgd_Events_1"
+  "sgd_Media_1"
+  "sgd_RideSharing_2"
+  "sgd_Banks_1"
+)
+
+echo "Starting Experiment 6 LODO (Final Token Ablation)"
+echo "Model: $MODEL"
+echo "Layer: $LAYER_IDX"
+echo "--------------------------------------------------------"
+
+for DOMAIN in "${DOMAINS[@]}"; do
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] Hold-out domain: $DOMAIN"
+    EVAL_JSON="${OUT_DIR}/${DOMAIN}_eval.json"
+    MODEL_PATH="${OUT_DIR}/lodo_query_layer${LAYER_IDX}_${DOMAIN}.pt"
+    
+    if [ -f "$EVAL_JSON" ]; then
+        echo "  -> Skip: $EVAL_JSON already exists."
+        continue
+    fi
+
+    # a. Train holding out the domain
+    if [ -f "$MODEL_PATH" ]; then
+        echo "  -> Skip: $MODEL_PATH already exists."
+    else
+        echo "  -> Training..."
+        $PYTHON_BIN scripts/06d_train_probe_lodo_final_token.py \
+            --model_name "$MODEL" \
+            --data_jsonl "$DATA_JSONL" \
+            --test_domain "$DOMAIN" \
+            --save_dir "$OUT_DIR" \
+            --layer_idx "$LAYER_IDX" \
+            --batch_size 16 \
+            --num_epochs 3 \
+            --neg_sample_prob 0.20 2>&1 | tee -a "$OUT_DIR/realtime.log"
+    fi
+        
+    # b. Evaluate on the held-out domain
+    echo "  -> Evaluating..."
+    $PYTHON_BIN scripts/06e_eval_probe_lodo_final_token.py \
+        --model_name "$MODEL" \
+        --data_jsonl "$DATA_JSONL" \
+        --test_domain "$DOMAIN" \
+        --model_path "$MODEL_PATH" \
+        --layer_idx "$LAYER_IDX" \
+        --batch_size 16 \
+        --out_json "$EVAL_JSON"
+        
+    echo "--------------------------------------------------------"
+done
+
+# 3. Aggregate Results
+SUMMARY_JSON="${OUT_DIR}/summary_lodo_exp6.json"
+echo "[$(date +'%Y-%m-%d %H:%M:%S')] Aggregating results to $SUMMARY_JSON..."
+$PYTHON_BIN scripts/06c_aggregate_lodo.py \
+    --results_dir "$OUT_DIR" \
+    --out_summary "$SUMMARY_JSON"
+
+echo "=== JOB END ==="
+date

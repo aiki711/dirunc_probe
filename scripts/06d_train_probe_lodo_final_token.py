@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
-from common import DIRS, QUERY_LABEL_STR, SPECIAL_TOKENS, QUERY_TOKENS_STR
+from common import DIRS, QUERY_LABEL_STR, SPECIAL_TOKENS, QUERY_TOKENS_STR, strip_query_tokens
 
 # ---------------- Utils ----------------
 
@@ -96,13 +96,14 @@ class JsonlDirUncLodoDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         r = self.rows[idx]
-        text = r["text"]
+        # Strip the query tokens so the probe trains strictly on the natural sentence's final token
+        text = strip_query_tokens(r["text"]).strip()
         labels = r["labels"]
         
         # Dynamic Negative Sampling for Zero-Input Bias Mitigation
         if self.negative_sample_prob > 0 and self.rng.random() < self.negative_sample_prob:
-            # Wipe out text, keep only query tokens
-            text = QUERY_TOKENS_STR.strip()
+            # Wipe out text, leaving it empty
+            text = ""
             # Set all labels to 0
             labels = {d: 0 for d in DIRS}
             
@@ -151,16 +152,11 @@ class ProbeModelBase(nn.Module):
         idx = layer_idx + 1 if layer_idx >= 0 else len(hidden_states) + layer_idx
         return hidden_states[idx]
 
-class QueryTokenProbe(nn.Module):
-    """Query-token Approach trained across multiple batches."""
-    def __init__(self, base: ProbeModelBase, tokenizer: Any) -> None:
+class FinalTokenProbe(nn.Module):
+    """Probe trained solely on the final token of the input sequence."""
+    def __init__(self, base: ProbeModelBase) -> None:
         super().__init__()
         self.base = base
-        
-        self.token_id = {}
-        for d, tstr in QUERY_LABEL_STR.items():
-            self.token_id[d] = tokenizer.convert_tokens_to_ids(tstr)
-
         target_dtype = getattr(base, "output_dtype", torch.float32)
         self.W = nn.Parameter(torch.empty(len(DIRS), base.hidden_size, dtype=target_dtype))
         self.b = nn.Parameter(torch.zeros(len(DIRS), dtype=target_dtype))
@@ -179,21 +175,12 @@ class QueryTokenProbe(nn.Module):
                  logits_list.append(torch.zeros(len(DIRS), device=input_ids.device))
                  continue
                  
-            ids_list = input_ids[bi, valid_indices].tolist()
             h_vec = hs[bi, valid_indices, :]
             
-            dir_vecs = []
-            for d in DIRS:
-                tid = self.token_id[d]
-                pos = None
-                for j in range(len(ids_list) - 1, -1, -1):
-                    if ids_list[j] == tid:
-                        pos = j
-                        break
-                vec = h_vec[pos] if pos is not None else h_vec[-1]
-                dir_vecs.append(vec)
+            # Use the final token for all directions
+            vec = h_vec[-1]
+            H = vec.unsqueeze(0).expand(len(DIRS), -1)  # (7, hidden)
             
-            H = torch.stack(dir_vecs, dim=0)
             logit = (H * self.W).sum(dim=1) + self.b
             logits_list.append(logit)
             
@@ -233,9 +220,6 @@ def main():
     tokenizer.padding_side = "right"
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
-        
-    # <-- Single Tokenization Fix -->
-    tokenizer.add_special_tokens({"additional_special_tokens": SPECIAL_TOKENS})
 
     rows = read_jsonl(Path(args.data_jsonl))
     
@@ -257,14 +241,10 @@ def main():
 
     print("Initializing model...")
     base = ProbeModelBase(args.model_name)
-    
-    # <-- Single Tokenization Fix -->
-    base.lm.resize_token_embeddings(len(tokenizer))
-    
     base.lm.eval()
     base.to(device)
     
-    probe = QueryTokenProbe(base, tokenizer).to(device)
+    probe = FinalTokenProbe(base).to(device)
     probe.train()
     
     # only optimize probe head
