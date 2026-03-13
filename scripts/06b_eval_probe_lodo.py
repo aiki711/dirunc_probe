@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
-from common import DIRS, QUERY_LABEL_STR, QUERY_TOKENS_STR
+from common import DIRS, QUERY_LABEL_STR, SPECIAL_TOKENS, QUERY_TOKENS_STR
 
 # ---------------- Utils ----------------
 

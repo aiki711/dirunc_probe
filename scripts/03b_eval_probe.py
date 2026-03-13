@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, AutoModel
 from sklearn.metrics import f1_score, precision_recall_fscore_support
 
-from common import DIRS, SPECIAL_TOKENS, QUERY_LABEL_STR
+from common import DIRS, SPECIAL_TOKENS, QUERY_LABEL_STR, strip_query_tokens
 import importlib.util
 import sys
 
@@ -27,7 +27,6 @@ evaluate_cached = train_probe.evaluate_cached
 JsonlDirUncDataset = train_probe.JsonlDirUncDataset
 FilterSpec = train_probe.FilterSpec
 collate_batch = train_probe.collate_batch
-strip_query_tokens = train_probe.strip_query_tokens
 
 def main():
     parser = argparse.ArgumentParser()

@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, Dataset, TensorDataset
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
-from common import DIRS, QUERY_LABEL_STR, SPECIAL_TOKENS, QUERY_TOKENS
+from common import DIRS, QUERY_LABEL_STR, SPECIAL_TOKENS, QUERY_TOKENS, strip_query_tokens
 
 # ---------------- Utils ----------------
 
@@ -112,23 +112,6 @@ def expand_best_pm2(best: int, num_layers: int) -> List[int]:
             out.append(c)
     return out
 
-def strip_query_tokens(text: str) -> str:
-    t = text.rstrip()
-    if t.endswith(QUERY_TOKENS): # Error: QUERY_TOKENS not defined, likely usage error in original or missing var.
-        # Wait, I don't see QUERY_TOKENS defined above, only QUERY_LABEL_STR and SPECIAL_TOKENS.
-        # Checking implementation plan or previous output... 
-        # Ah, I don't have the implementation of strip_query_tokens from my view.
-        # Step 179 showed it signature. Step 199 showed full content!
-        # Step 199 line 110: if t.endswith(QUERY_TOKENS):
-        # BUT where is QUERY_TOKENS defined?
-        # Maybe tuple(SPECIAL_TOKENS)?
-        # Let's check imports in Step 179/199.
-        # It's not there.
-        # Wait, maybe it's tuple(SPECIAL_TOKENS).
-        # Let's Assume tuple(SPECIAL_TOKENS).
-        pass
-    # I'll fix this to use tuple(SPECIAL_TOKENS) which is safe for endswith.
-    return t
 
 def _init_span_acc() -> Dict[str, Any]:
     return {
