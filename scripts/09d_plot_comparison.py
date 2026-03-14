@@ -1,12 +1,10 @@
-import json
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
+import json
 from pathlib import Path
-
-# Fix plotting issues without X server
-import matplotlib
-matplotlib.use('Agg')
 
 DIRS = ["who", "what", "when", "where", "why", "how", "which"]
 

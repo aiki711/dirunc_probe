@@ -24,6 +24,19 @@ QUERY_LABEL_STR = {
 SPECIAL_TOKENS = list(QUERY_LABEL_STR.values())
 QUERY_TOKENS = tuple(SPECIAL_TOKENS)
 
+# Natural Language Query Mapping
+NATURAL_QUERY_MAP = {
+    "who": "Who?",
+    "what": "What?",
+    "when": "When?",
+    "where": "Where?",
+    "why": "Why?",
+    "how": "How?",
+    "which": "Which?",
+}
+NATURAL_QUERY_TOKENS = tuple(NATURAL_QUERY_MAP.values())
+NATURAL_QUERY_STR = " " + " ".join(NATURAL_QUERY_TOKENS)
+
 # Helper for string concatenation (e.g. " [WHO?] [WHAT?] ...")
 # Some scripts might use a joined string
 QUERY_TOKENS_STR = " " + " ".join(SPECIAL_TOKENS)

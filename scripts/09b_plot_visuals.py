@@ -1,12 +1,10 @@
-import json
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from pathlib import Path
-
-# Fix plotting issues without X server
 import matplotlib
 matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import seaborn as sns
+import json
+import numpy as np
+from pathlib import Path
 
 DIRS = ["who", "what", "when", "where", "why", "how", "which"]
 COLORS = {

@@ -6,9 +6,12 @@ Target labels (WHO, WHEN, WHERE) are drawn at full opacity;
 others are faded to background.
 """
 
-import json
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+import seaborn as sns
+import json
 import numpy as np
 from pathlib import Path
 

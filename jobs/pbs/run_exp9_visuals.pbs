@@ -16,7 +16,10 @@ mkdir -p runs/balanced/experiment9_visuals
 PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python -u"
 export PYTHONPATH=${PYTHONPATH:-}:.
 
-echo "=== EXPERIMENT 9: DATA EXTRACTION ==="
+echo "=== ENVIRONMENT CHECK ==="
+$PYTHON_BIN -c "import matplotlib; import seaborn; import torch; print('Dependencies OK')"
+
+echo -e "\n=== EXPERIMENT 9: DATA EXTRACTION ==="
 $PYTHON_BIN scripts/09a_extract_trajectory.py
 
 echo -e "\n=== EXPERIMENT 9: PLOTTING VISUALS ==="
