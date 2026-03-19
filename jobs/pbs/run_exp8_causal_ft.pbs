@@ -1,0 +1,33 @@
+#!/bin/bash
+#PBS -N exp8_causal_ft
+#PBS -q GPU-1
+#PBS -o log/exp8_causal_ft_output.log
+#PBS -e log/exp8_causal_ft_error.log
+#PBS -l select=1:ncpus=8:ngpus=1:mem=32gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p log runs/balanced/experiment8_causal_ft
+
+echo "=== JOB START (FINAL TOKEN Exp8) ==="
+date
+hostname
+nvidia-smi || true
+
+PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python -u"
+export PYTHONPATH=${PYTHONPATH:-}:.
+
+echo "=== EXPERIMENT 8A (FT): ABLATION ==="
+$PYTHON_BIN scripts/12a_ablation_test_ft.py
+
+echo -e "\n=== EXPERIMENT 8B (FT): PATCHING ==="
+$PYTHON_BIN scripts/12b_patching_test_ft.py
+
+echo -e "\n=== EXPERIMENT 8C (FT): HOW MECHANISM ==="
+$PYTHON_BIN scripts/12c_how_mechanism_ft.py
+
+echo "=== JOB END ==="
+date

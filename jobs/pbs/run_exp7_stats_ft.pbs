@@ -1,0 +1,90 @@
+#!/bin/bash
+#PBS -N exp7_stats_ft
+#PBS -q GPU-1
+#PBS -o log/exp7_stats_ft_output.log
+#PBS -e log/exp7_stats_ft_error.log
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
+#PBS -l walltime=04:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p log runs/balanced/experiment7_neurons_ft
+
+echo "=== JOB START (FINAL TOKEN Exp7) ==="
+date
+hostname
+nvidia-smi || true
+
+PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python -u"
+export PYTHONPATH=${PYTHONPATH:-}:.
+
+$PYTHON_BIN -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
+
+OUT_DIR="runs/balanced/experiment7_neurons_ft"
+
+# Phase 1: Analyze Final Token probe weights to find important neurons
+echo "[exp7-ft] Phase 1: Analyzing Final Token probe weights..."
+$PYTHON_BIN scripts/11a_analyze_probe_weights_ft.py \
+    --model_dir "runs/balanced/experiment6_final_token" \
+    --out_json "${OUT_DIR}/neurons_report.json" \
+    --top_k 20
+
+# Phase 2a: Create shift pairs (no query tokens)
+echo "[exp7-ft] Phase 2a: Creating shift pairs..."
+$PYTHON_BIN scripts/11b_create_shift_pairs_ft.py
+
+# Phase 2b: Verify neuron activation shifts on shift pairs
+echo "[exp7-ft] Phase 2b: Verifying neuron activation shifts..."
+$PYTHON_BIN scripts/11c_verify_neuron_shift_ft.py
+
+# Phase 3: Batch corpus pair tracking (reuses existing corpus_pairs from exp7)
+echo "[exp7-ft] Phase 3: Running corpus shift tracking..."
+$PYTHON_BIN scripts/11f_verify_corpus_shift_ft.py 2>&1 | tee "${OUT_DIR}/realtime_11f.log"
+
+# Phase 4: Statistical visualization (reuses 07g, just load from ft dir)
+echo "[exp7-ft] Phase 4: Statistical visualization..."
+$PYTHON_BIN -c "
+import json
+from pathlib import Path
+# Patch 07g to use ft directory
+import sys, types
+m = types.ModuleType('scripts.07g_visualize')
+sys.modules['scripts.07g_visualize'] = m
+exec(open('scripts/07g_visualize_corpus_stats.py').read().replace(
+    'experiment7_neurons/corpus_shift_data.json',
+    'experiment7_neurons_ft/corpus_shift_data.json'
+)) 
+" > "${OUT_DIR}/corpus_stats_report_final.txt" 2>&1 || true
+
+# Simpler approach: just run 07g with env var or pass path directly
+python3 -c "
+import json, math, numpy as np
+from pathlib import Path
+from scipy import stats
+
+data_path = Path('runs/balanced/experiment7_neurons_ft/corpus_shift_data.json')
+if data_path.exists():
+    with open(data_path) as f:
+        all_results = json.load(f)
+    DIRS = ['who','what','when','where','why','how','which']
+    print('='*80)
+    print('CORPUS SHIFT STATISTICS (Final Token)')
+    print('='*80)
+    for label, data in all_results.items():
+        pairs = [p for p in data.get('pairs',[]) if p.get('valid')]
+        neurons = data.get('neuron_indices',[])
+        print(f'--- {label.upper()} ({len(pairs)} valid pairs) ---')
+        for i, nidx in enumerate(neurons):
+            acts_a = [p['A_activations'][i] for p in pairs]
+            acts_b = [p['B_activations'][i] for p in pairs]
+            deltas = [b - a for a, b in zip(acts_a, acts_b)]
+            mean_d = np.mean(deltas)
+            t_stat, p_val = stats.ttest_rel(acts_b, acts_a)
+            sig = '***' if p_val < 0.001 else ('**' if p_val < 0.01 else ('*' if p_val < 0.05 else ''))
+            print(f'  n{nidx}: mean_delta={mean_d:+.3f}, p={p_val:.2e}{sig}')
+" > "${OUT_DIR}/corpus_stats_report_final.txt"
+
+echo "=== JOB END ==="
+date

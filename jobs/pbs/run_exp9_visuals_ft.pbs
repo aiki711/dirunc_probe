@@ -1,0 +1,32 @@
+#!/bin/bash
+#PBS -N exp9_visuals_ft
+#PBS -q GPU-1
+#PBS -o log/exp9_visuals_ft_output.log
+#PBS -e log/exp9_visuals_ft_error.log
+#PBS -l select=1:ncpus=8:ngpus=1:mem=32gb
+#PBS -l walltime=01:30:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p log runs/balanced/experiment9_visuals_ft
+
+echo "=== JOB START (FINAL TOKEN Exp9) ==="
+date
+hostname
+nvidia-smi || true
+
+PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python -u"
+export PYTHONPATH=${PYTHONPATH:-}:.
+
+$PYTHON_BIN -c "import matplotlib; import seaborn; import torch; print('Dependencies OK')"
+
+echo -e "\n=== EXPERIMENT 9 (FT): DATA EXTRACTION ==="
+$PYTHON_BIN scripts/13a_extract_trajectory_ft.py
+
+echo -e "\n=== EXPERIMENT 9 (FT): PLOTTING VISUALS ==="
+$PYTHON_BIN scripts/13b_plot_visuals_ft.py
+
+echo -e "\n=== EXPERIMENT 9 (FT): DONE ==="
+date
