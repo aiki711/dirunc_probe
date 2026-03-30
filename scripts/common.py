@@ -43,13 +43,15 @@ QUERY_TOKENS_STR = " " + " ".join(SPECIAL_TOKENS)
 
 
 def strip_query_tokens(text: str) -> str:
-    """Removes trailing query tokens from the text."""
+    """Removes ALL trailing query tokens from the text."""
     t = text.rstrip()
-    if t.endswith(QUERY_TOKENS):
-        # We need to find which token it ends with and strip it
+    changed = True
+    while changed:
+        changed = False
         for tok in QUERY_TOKENS:
             if t.endswith(tok):
-                return t[: -len(tok)].rstrip()
+                t = t[: -len(tok)].rstrip()
+                changed = True
     return t
 
 

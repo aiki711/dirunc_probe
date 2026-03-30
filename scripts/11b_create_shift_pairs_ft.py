@@ -11,10 +11,12 @@ def main():
     # Define minimal pairs for each label (same as 07b, but without QUERY_TOKENS_STR)
     pairs = [
         {"label": "when",  "A": "I want to find a restaurant.",          "B": "I want to find a restaurant for tonight."},
+        {"label": "when",  "A": "I want to find a restaurant for tonight.", "B": "I want to find a restaurant for tonight at 7 PM."},
         {"label": "where", "A": "I need to book a taxi.",                "B": "I need to book a taxi to the airport."},
         {"label": "who",   "A": "I want to reserve a table.",            "B": "I want to reserve a table for two people."},
         {"label": "what",  "A": "I'm looking for a place to stay.",      "B": "I'm looking for a hotel with free wifi."},
         {"label": "how",   "A": "Could you book me a ride?",             "B": "Could you book me a shared ride?"},
+        {"label": "how",   "A": "Could you book me a shared ride?",      "B": "Could you book me a shared ride with Uber?"},
         {"label": "which", "A": "I am looking for a restaurant in London.", "B": "I am looking for a cheap restaurant in London."},
     ]
 
