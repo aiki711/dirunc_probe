@@ -111,14 +111,20 @@ def main():
         print_stats(res_new, "NEW IMPROVED")
         
         print("\n--- Detailed Comparison ---")
-        print(f"{'Label':<7} | {'Old Trans.':<10} | {'New Trans.':<10} | {'Old Inv.':<10} | {'New Inv.':<10}")
+        print(f"{'Label':<7} | {'Old (A->B)':<15} | {'New (A->B)':<15} | {'Old Inv.':<10} | {'New Inv.':<10}")
         for ro, rn in zip(res_old, res_new):
             label = ro["label"]
-            st_o = "OK" if ro["pb"] < 0.1 else "NG"
-            st_n = "OK" if rn["pb"] < 0.1 else "NG"
+            trans_o = f"{ro['pa']:>4.1%}->{ro['pb']:>4.1%}"
+            trans_n = f"{rn['pa']:>4.1%}->{rn['pb']:>4.1%}"
+            
             inv_o = "OK" if abs(ro["pb_pert"] - ro["pb"]) < 0.1 else "NG"
             inv_n = "OK" if abs(rn["pb_pert"] - rn["pb"]) < 0.1 else "NG"
-            print(f"{label:<7} | {st_o:<10} | {st_n:<10} | {inv_o:<10} | {inv_n:<10}")
+            
+            # Also print the actual perturbation delta for New
+            p_delta_n = rn["pb_pert"] - rn["pb"]
+            inv_n_str = f"{inv_n} ({p_delta_n:>+4.1%})"
+            
+            print(f"{label:<7} | {trans_o:<15} | {trans_n:<15} | {inv_o:<10} | {inv_n_str:<10}")
 
 if __name__ == "__main__":
     main()
