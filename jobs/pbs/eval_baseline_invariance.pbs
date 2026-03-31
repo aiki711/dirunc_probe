@@ -1,0 +1,20 @@
+#!/bin/bash
+#PBS -N eval_invariance
+#PBS -q GPU-1
+#PBS -o log/eval_invariance_baseline.log
+#PBS -e log/eval_invariance_baseline_err.log
+#PBS -l select=1:ncpus=8:ngpus=1:mem=32gb
+#PBS -l walltime=00:20:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p log
+
+PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python"
+export PYTHONPATH=${PYTHONPATH:-}:.
+
+echo "=== KEYWORD INVARIANCE BASELINE START ==="
+$PYTHON_BIN scripts/15_eval_keyword_invariance_baseline.py
+echo "=== DONE ==="

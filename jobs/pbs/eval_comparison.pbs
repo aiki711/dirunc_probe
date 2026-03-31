@@ -1,0 +1,20 @@
+#!/bin/bash
+#PBS -N eval_comparison
+#PBS -q GPU-S
+#PBS -o log/eval_comparison.log
+#PBS -e log/eval_comparison_err.log
+#PBS -l select=1:ncpus=8:ngpus=1:mem=32gb
+#PBS -l walltime=00:15:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p log
+
+PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python"
+export PYTHONPATH=${PYTHONPATH:-}:.
+
+echo "=== COMPARATIVE EVALUATION START ==="
+$PYTHON_BIN scripts/17_compare_models.py
+echo "=== DONE ==="

@@ -1,0 +1,26 @@
+#!/bin/bash
+#PBS -N train_improved
+#PBS -q GPU-S
+#PBS -o log/train_improved.log
+#PBS -e log/train_improved_err.log
+#PBS -l select=1:ncpus=8:ngpus=1:mem=32gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p log
+mkdir -p runs/improved
+
+PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python"
+export PYTHONPATH=${PYTHONPATH:-}:.
+
+$PYTHON_BIN scripts/16_train_probe_improved.py \
+  --data_jsonl data/processed/sgd/dirunc_balanced/train.jsonl \
+  --test_domain sgd_Events_1 \
+  --save_dir runs/improved \
+  --layer_idx 8 \
+  --num_epochs 3 \
+  --mask_prob 0.5 \
+  --batch_size 16
