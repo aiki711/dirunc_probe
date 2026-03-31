@@ -179,6 +179,7 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=3)
     parser.add_argument("--neg_sample_prob", type=float, default=0.20)
     parser.add_argument("--mask_prob", type=float, default=0.50)
+    parser.add_argument("--pos_weight_mult", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -200,7 +201,8 @@ def main():
     neg_counts = len(dataset) - pos_counts
     # Small epsilon to avoid div by zero
     pos_weight = (neg_counts + 1e-6) / (pos_counts + 1e-6)
-    print(f"Calculated pos_weight (0:1 ratio): {pos_weight.tolist()}")
+    pos_weight = pos_weight * args.pos_weight_mult
+    print(f"Calculated pos_weight (0:1 ratio) with mult {args.pos_weight_mult}: {pos_weight.tolist()}")
 
     base = ProbeModelBase(args.model_name)
     base.lm.eval()
