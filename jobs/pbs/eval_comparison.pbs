@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -N eval_comparison
-#PBS -q GPU-S
+#PBS -q GPU-1
 #PBS -o log/eval_comparison.log
 #PBS -e log/eval_comparison_err.log
 #PBS -l select=1:ncpus=8:ngpus=1:mem=32gb
