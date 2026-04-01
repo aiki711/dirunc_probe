@@ -50,7 +50,7 @@ def evaluate_model(lm, tokenizer, W, b, layer_idx, pairs, device):
             pos_b = get_final_token_position(enc_b["attention_mask"])
             res["pb"] = run_probe_final_token(out_b.hidden_states[layer_idx+1], pos_b, W, b)[label]
             
-            # B_pert: Perturbed Filled
+            # B_pert: Perturbed (Keyword removed)
             p_text = pair["B"]
             for kw, subs in PERTURBATIONS.items():
                 if kw in p_text:
@@ -98,27 +98,33 @@ def main():
 
     def print_stats(res_list, title):
         total = len(res_list)
-        drops = sum(1 for r in res_list if r["pb"] < r["pa"])
-        resolved = sum(1 for r in res_list if r["pb"] < 0.1)
-        # Invariance: change should be small
-        inv = sum(1 for r in res_list if abs(r["pb_pert"] - r["pb"]) < 0.1)
+        a_hit = sum(1 for r in res_list if r["pa"] > 0.5)
+        b_hit = sum(1 for r in res_list if r["pb"] < 0.1)
+        # Strict Invariance: B_pert stays low
+        inv_hit = sum(1 for r in res_list if r["pb_pert"] < 0.1)
+        pair_hit = sum(1 for r in res_list if r["pa"] > 0.5 and r["pb"] < 0.1)
+        strict_hit = sum(1 for r in res_list if r["pa"] > 0.8 and r["pb"] < 0.1 and r["pb_pert"] < 0.1)
+        
         print(f"\n[{title}]")
-        print(f"  Transition Success (P(B)<10%): {resolved}/{total} ({resolved/total:.1%})")
-        print(f"  Keyword Invariance (Delta<10%): {inv}/{total} ({inv/total:.1%})")
+        print(f"  A-Score (P(A)>0.5): {a_hit}/{total} ({a_hit/total:.1%})")
+        print(f"  B-Score (P(B)<0.1): {b_hit}/{total} ({b_hit/total:.1%})")
+        print(f"  Inv-Score (P(B_p)<0.1): {inv_hit}/{total} ({inv_hit/total:.1%})")
+        print(f"  Pair Accuracy (A & B): {pair_hit}/{total} ({pair_hit/total:.1%})")
+        print(f"  Strict Accuracy: {strict_hit}/{total} ({strict_hit/total:.1%})")
 
     print_stats(res_old, "OLD BASELINE")
     if res_new:
         print_stats(res_new, "NEW IMPROVED")
         
         print("\n--- Detailed Comparison ---")
-        print(f"{'Label':<7} | {'Old Trans.':<10} | {'New Trans.':<10} | {'Old Inv.':<10} | {'New Inv.':<10}")
+        print(f"{'Label':<7} | {'Old (A->B)':<15} | {'New (A->B)':<15} | {'N-Inv.':<7}")
         for ro, rn in zip(res_old, res_new):
             label = ro["label"]
-            st_o = "OK" if ro["pb"] < 0.1 else "NG"
-            st_n = "OK" if rn["pb"] < 0.1 else "NG"
-            inv_o = "OK" if abs(ro["pb_pert"] - ro["pb"]) < 0.1 else "NG"
-            inv_n = "OK" if abs(rn["pb_pert"] - rn["pb"]) < 0.1 else "NG"
-            print(f"{label:<7} | {st_o:<10} | {st_n:<10} | {inv_o:<10} | {inv_n:<10}")
+            # Formatting prob as %
+            fmt_old = f"{ro['pa']:>4.0%}->{ro['pb']:>4.0%}"
+            fmt_new = f"{rn['pa']:>4.0%}->{rn['pb']:>4.0%}"
+            inv_n = "OK" if rn["pb_pert"] < 0.1 else f"NG({rn['pb_pert']:>4.0%})"
+            print(f"{label:<7} | {fmt_old:<15} | {fmt_new:<15} | {inv_n:<7}")
 
 if __name__ == "__main__":
     main()

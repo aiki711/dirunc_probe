@@ -1,0 +1,29 @@
+#!/bin/bash
+#PBS -N train_contrastive
+#PBS -q GPU-1
+#PBS -o log/train_contrastive.log
+#PBS -e log/train_contrastive_err.log
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
+#PBS -l walltime=04:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p log
+mkdir -p runs/contrastive
+
+PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python"
+export PYTHONPATH=${PYTHONPATH:-}:.
+
+echo "=== ACCURACY-FOCUSED TRAINING START ==="
+$PYTHON_BIN scripts/19_train_probe_contrastive.py \
+    --data_jsonl data/processed/sgd/dirunc_balanced/paired_train.jsonl \
+    --save_dir runs/contrastive \
+    --layer_idx 8 \
+    --batch_size 4 \
+    --learning_rate 1e-4 \
+    --num_epochs 3 \
+    --margin 0.5 \
+    --seed 42
+echo "=== DONE ==="
