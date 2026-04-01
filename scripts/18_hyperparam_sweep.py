@@ -7,19 +7,20 @@ from pathlib import Path
 from itertools import product
 from tqdm import tqdm
 
-# Hyperparameter Grid
+# Hyperparameter Grid (Faster and more diagnostic)
 GRID = {
-    "lr": [5e-4, 1e-3],
+    "lr": [1e-3],
     "mask": [0.5, 0.7],
-    "pos_w": [1.0, 4.0],
-    "epochs": [3, 10]
+    "pos_w": [4.0, 8.0, 16.0],  # Focus on fixing over-pessimism
+    "epochs": [5, 10]
 }
 
 DATA_JSONL = "data/processed/sgd/dirunc_balanced/train.jsonl"
+DATA_SUBSAMPLED = "data/processed/sgd/dirunc_balanced/train_sweep_subset.jsonl"
 TEST_DOMAIN = "sgd_Events_1"
 LAYER_IDX = 8
 SAVE_DIR = "runs/sweep"
-RESULTS_CSV = "runs/sweep_results.csv"
+RESULTS_CSV = "runs/sweep_results_v2.csv"
 PYTHON_BIN = "/home/s2550009/anaconda3/envs/dirunc_probe/bin/python"
 
 # Minimal Pais for Evaluation
@@ -29,7 +30,7 @@ def run_training(lr, mask, pos_w, epochs, model_tag):
     # Note: Using the newly added --pos_weight_mult flag
     cmd = [
         PYTHON_BIN, "scripts/16_train_probe_improved.py",
-        "--data_jsonl", DATA_JSONL,
+        "--data_jsonl", DATA_SUBSAMPLED,
         "--test_domain", TEST_DOMAIN,
         "--save_dir", SAVE_DIR,
         "--layer_idx", str(LAYER_IDX),
@@ -84,6 +85,17 @@ def evaluate_strict(model_path):
 def main():
     Path(SAVE_DIR).mkdir(parents=True, exist_ok=True)
     
+    # Subsample data if subset doesn't exist
+    if not Path(DATA_SUBSAMPLED).exists():
+        print(f"Creating subsampled dataset (5000 rows)...")
+        with open(DATA_JSONL, "r") as f:
+            lines = f.readlines()
+        import random
+        random.seed(42)
+        random.shuffle(lines)
+        with open(DATA_SUBSAMPLED, "w") as f:
+            f.writelines(lines[:5000])
+
     keys = GRID.keys()
     combinations = list(product(*GRID.values()))
     
