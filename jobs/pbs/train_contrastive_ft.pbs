@@ -1,0 +1,32 @@
+#!/bin/bash
+#PBS -N train_contrastive_ft
+#PBS -q GPU-1
+#PBS -o log/train_contrastive_ft.log
+#PBS -e log/train_contrastive_ft_err.log
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
+#PBS -l walltime=04:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p log
+mkdir -p runs/contrastive
+
+PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python"
+export PYTHONPATH=${PYTHONPATH:-}:.
+
+echo "=== FT ACCURACY-FOCUSED TRAINING SWEEP START ==="
+for LAYER in 8 16 24; do
+    echo "--- Training Layer $LAYER ---"
+    $PYTHON_BIN scripts/19b_train_probe_contrastive_ft.py \
+        --data_jsonl data/processed/sgd/dirunc_balanced/paired_minimal_v2.jsonl \
+        --save_dir runs/contrastive \
+        --layer_idx $LAYER \
+        --batch_size 4 \
+        --learning_rate 1e-4 \
+        --num_epochs 5 \
+        --margin 1.0 \
+        --seed 42
+done
+echo "=== ALL LAYERS DONE ==="

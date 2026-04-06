@@ -1,0 +1,26 @@
+#!/bin/bash
+#PBS -N eval_contrastive_ft
+#PBS -q GPU-1
+#PBS -o log/eval_contrastive_ft.log
+#PBS -e log/eval_contrastive_ft_err.log
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
+#PBS -l walltime=00:30:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p log
+
+PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python"
+export PYTHONPATH=${PYTHONPATH:-}:.
+
+echo "=== FT CONTRASTIVE PROBE EVALUATION SWEEP START ==="
+for LAYER in 8 16 24; do
+    echo "--- Evaluating Layer $LAYER ---"
+    $PYTHON_BIN scripts/21b_eval_contrastive_ft.py \
+        --probe_path runs/contrastive/contrastive_ft_layer$LAYER.pt \
+        --test_json runs/balanced/experiment7_neurons_ft/shift_pairs_ft.json \
+        --layer_idx $LAYER
+done
+echo "=== ALL EVALUATIONS DONE ==="

@@ -1,0 +1,21 @@
+#!/bin/bash
+#PBS -N create_semantic_v3
+#PBS -q GPU-1
+#PBS -o log/create_semantic_v3.log
+#PBS -e log/create_semantic_v3_err.log
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
+#PBS -l walltime=04:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p log
+
+PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python"
+export PYTHONPATH=${PYTHONPATH:-}:.
+
+echo "=== SEMANTIC MINIMAL PAIR GENERATION (V3) START ==="
+$PYTHON_BIN -m pip install accelerate psutil
+$PYTHON_BIN scripts/31_create_semantic_minimal_pairs.py
+echo "=== GENERATION COMPLETE ==="

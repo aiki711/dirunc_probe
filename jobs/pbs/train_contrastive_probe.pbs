@@ -1,0 +1,40 @@
+#!/bin/bash
+#PBS -N train_contrastive_probe
+#PBS -q GPU-1
+#PBS -o log/train_contrastive_probe.log
+#PBS -e log/train_contrastive_probe_err.log
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
+#PBS -l walltime=24:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p log
+mkdir -p runs/contrastive_probe
+
+PYTHON_BIN="/home/s2550009/anaconda3/envs/dirunc_probe/bin/python"
+export PYTHONPATH=${PYTHONPATH:-}:.
+
+# Train using SGD semantic pairs, dev on MultiWOZ semantic pairs
+# Using gemma-2-2b-it with layer 16 assuming this is a stable state
+TRAIN_DATA="data/processed/mixed/semantic_v3_sgd.jsonl"
+DEV_DATA="data/processed/mixed/semantic_v3_multiwoz.jsonl"
+MODEL="google/gemma-2-2b-it"
+
+echo "=== CONTRASTIVE PROBING TRAINING START ==="
+echo "Model: $MODEL"
+echo "Train Data: $TRAIN_DATA"
+echo "Dev Data: $DEV_DATA"
+
+$PYTHON_BIN scripts/32_train_contrastive_probe.py \
+    --train_data "$TRAIN_DATA" \
+    --dev_data "$DEV_DATA" \
+    --model_name "$MODEL" \
+    --batch_size 16 \
+    --epochs 5 \
+    --margin 0.2 \
+    --lambda_margin 1.0 \
+    --out_dir runs/contrastive_probe
+
+echo "=== TRAINING COMPLETE ==="

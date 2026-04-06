@@ -13,6 +13,10 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
+# Import DIRS and strip_query_tokens from common.py
+sys.path.append(os.getcwd())
+from scripts.common import DIRS, strip_query_tokens
+
 # ---------------- Utils ----------------
 
 def set_seed(seed: int) -> None:
@@ -33,6 +37,7 @@ def read_jsonl(path: Path) -> List[Dict[str, Any]]:
 class ContrastivePairedDataset(Dataset):
     """
     Returns pairs of (Text_A, Text_B) where A is Missing and B is Filled.
+    Final Token version: strips query tokens.
     """
     def __init__(self, rows: List[Dict[str, Any]], seed: int = 42) -> None:
         self.rows = rows
@@ -43,9 +48,12 @@ class ContrastivePairedDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         r = self.rows[idx]
+        # Strip query tokens for Final Token training
+        text_A = strip_query_tokens(r["text_A"]).strip()
+        text_B = strip_query_tokens(r["text_B"]).strip()
         return {
-            "text_A": r["text_A"],
-            "text_B": r["text_B"],
+            "text_A": text_A,
+            "text_B": text_B,
             "label_idx": r["label_idx"]
         }
 
@@ -67,7 +75,7 @@ def collate_paired_batch(tokenizer, batch: List[Dict[str, Any]], max_length: int
 
 # ---------------- Model components ----------------
 
-class MeanPoolingProbe(nn.Module):
+class FinalTokenProbe(nn.Module):
     def __init__(self, model_name: str, n_dirs: int) -> None:
         super().__init__()
         dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else (torch.float16 if torch.cuda.is_available() else torch.float32)
@@ -86,16 +94,22 @@ class MeanPoolingProbe(nn.Module):
         # Hidden states of the specified layer
         hs = out.hidden_states[layer_idx + 1] # [B, L, H]
         
-        # Mean Pooling
-        mask_expanded = attention_mask.unsqueeze(-1).expand(hs.size()).to(hs.dtype)
-        sum_hs = torch.sum(hs * mask_expanded, 1)
-        sum_mask = torch.clamp(mask_expanded.sum(1), min=1e-9)
-        mean_hs = sum_hs / sum_mask # [B, H]
-        
-        # Apply probe weights
-        H = mean_hs.unsqueeze(1).expand(-1, self.W.size(0), -1) # [B, N, H]
-        logits = (H * self.W).sum(dim=2) + self.b # [B, N]
-        return logits
+        n_samples = input_ids.size(0)
+        logits_list = []
+        for bi in range(n_samples):
+            mask = attention_mask[bi]
+            valid_indices = torch.nonzero(mask).squeeze(-1)
+            if valid_indices.numel() == 0:
+                 logits_list.append(torch.zeros(len(DIRS), device=input_ids.device, dtype=hs.dtype))
+                 continue
+                 
+            # Extract final token representation
+            vec = hs[bi, valid_indices[-1], :] # [H]
+            H = vec.unsqueeze(0).expand(len(DIRS), -1) # [N, H]
+            logit = (H * self.W).sum(dim=1) + self.b # [N]
+            logits_list.append(logit)
+            
+        return torch.stack(logits_list, dim=0)
 
 # ---------------- Main ----------------
 
@@ -105,10 +119,10 @@ def main():
     parser.add_argument("--data_jsonl", type=str, required=True)
     parser.add_argument("--save_dir", type=str, required=True)
     parser.add_argument("--layer_idx", type=int, default=8)
-    parser.add_argument("--batch_size", type=int, default=4) # Smaller batch because of pairs
-    parser.add_argument("--learning_rate", type=float, default=1e-3)
+    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--learning_rate", type=float, default=1e-4) # Fixed 1e-4 as per PBS script
     parser.add_argument("--num_epochs", type=int, default=3)
-    parser.add_argument("--margin", type=float, default=0.5)
+    parser.add_argument("--margin", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -121,7 +135,7 @@ def main():
     if tokenizer.pad_token_id is None: tokenizer.pad_token = tokenizer.eos_token
 
     rows = read_jsonl(Path(args.data_jsonl))
-    # Subsample for faster training in this demo if needed
+    # Subsample if too large
     if len(rows) > 50000:
         rows = random.sample(rows, 50000)
         
@@ -129,19 +143,13 @@ def main():
     dl = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, 
                     collate_fn=lambda b: collate_paired_batch(tokenizer, b, max_length=512))
 
-    # Import DIRS from common.py
-    sys.path.append(os.getcwd())
-    from scripts.common import DIRS
-
-    probe = MeanPoolingProbe(args.model_name, len(DIRS)).to(device)
+    probe = FinalTokenProbe(args.model_name, len(DIRS)).to(device)
     probe.train()
     
     optimizer = torch.optim.AdamW([probe.W, probe.b], lr=args.learning_rate)
-    
-    # Loss: BCE for each + Contrastive Pairwise Loss
     bce_criterion = nn.BCEWithLogitsLoss()
 
-    print(f"Starting Accuracy-Focused Training on {len(dataset)} pairs...")
+    print(f"Starting FT Accuracy-Focused Training on {len(dataset)} pairs...")
     for epoch in range(args.num_epochs):
         epoch_loss = 0.0
         for step, batch in enumerate(tqdm(dl)):
@@ -159,7 +167,6 @@ def main():
             logits_B = probe(ids_B, mask_B, args.layer_idx)
             
             # 1. Classification Loss (BCE)
-            # We only supervise the specific slot being toggled for the contrastive effect
             target_labels_A = torch.zeros_like(logits_A)
             target_labels_B = torch.zeros_like(logits_B)
             for i, l_idx in enumerate(label_idxs):
@@ -169,13 +176,9 @@ def main():
             loss_bce = bce_criterion(logits_A, target_labels_A) + bce_criterion(logits_B, target_labels_B)
             
             # 2. Contrastive Pairwise Loss
-            # We want P(A) > P(B) + Margin for the target slot
             target_logits_A = torch.stack([logits_A[i, l_idx] for i, l_idx in enumerate(label_idxs)])
             target_logits_B = torch.stack([logits_B[i, l_idx] for i, l_idx in enumerate(label_idxs)])
             
-            # Soft version of margin loss
-            # loss_margin = max(0, margin - (logits_A - logits_B))
-            # Here we use ReLU for a similar effect
             loss_margin = torch.mean(torch.relu(args.margin - (target_logits_A - target_logits_B)))
             
             total_loss = loss_bce + loss_margin
@@ -188,9 +191,9 @@ def main():
 
         print(f"Epoch {epoch+1} Avg Loss: {epoch_loss / len(dl):.4f}")
 
-    out_path = Path(args.save_dir) / f"contrastive_mean_layer{args.layer_idx}.pt"
+    out_path = Path(args.save_dir) / f"contrastive_ft_layer{args.layer_idx}.pt"
     torch.save({"W": probe.W.detach().cpu(), "b": probe.b.detach().cpu()}, out_path)
-    print(f"Saved accuracy-focused probe to {out_path}")
+    print(f"Saved accuracy-focused FT probe to {out_path}")
 
 if __name__ == "__main__":
     main()
