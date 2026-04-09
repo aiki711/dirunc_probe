@@ -371,6 +371,7 @@ def process_multiwoz(data_path: str = "data/raw/multiwoz/data.json",
         log = dialog.get("log", [])
         context_turns: List[str] = []
         tracker.clear()
+        prev_meta: dict = {}
 
         for turn_idx, turn in enumerate(log):
             text    = turn["text"].strip()
@@ -380,6 +381,39 @@ def process_multiwoz(data_path: str = "data/raw/multiwoz/data.json",
             if is_user:
                 spans    = turn.get("span_info", [])
                 metadata = turn.get("metadata", {})
+
+                # Fallback: if span_info is empty, reconstruct from metadata diff
+                if not spans:
+                    for domain, dinfo in metadata.items():
+                        semi = dinfo.get("semi", {})
+                        prev_semi = prev_meta.get(domain, {}).get("semi", {})
+                        for sl, val in semi.items():
+                            if val and val not in ("", "not mentioned", "none") and val != prev_semi.get(sl):
+                                # Try to find val in text
+                                val_str = str(val)
+                                if val_str.lower() in text.lower():
+                                    # Create pseudo-span: [act, slot, val, start_char, end_char]
+                                    # Note: 33_create_case_grammar_pairs.py uses word-level indices for start/end
+                                    words = text.split()
+                                    val_words = val_str.split()
+                                    # Find contiguous val_words in words
+                                    for i in range(len(words) - len(val_words) + 1):
+                                        if " ".join(words[i:i+len(val_words)]).lower() == val_str.lower():
+                                            spans.append([f"{domain}-Inform", sl, val_str, i, i + len(val_words) - 1])
+                                            break
+                        
+                        book = dinfo.get("book", {})
+                        prev_book = prev_meta.get(domain, {}).get("book", {})
+                        for sl, val in book.items():
+                            if sl != "booked" and val and val not in ("", "none") and val != prev_book.get(sl):
+                                val_str = str(val)
+                                if val_str.lower() in text.lower():
+                                    words = text.split()
+                                    val_words = val_str.split()
+                                    for i in range(len(words) - len(val_words) + 1):
+                                        if " ".join(words[i:i+len(val_words)]).lower() == val_str.lower():
+                                            spans.append([f"{domain}-Inform", sl, val_str, i, i + len(val_words) - 1])
+                                            break
 
                 active_domains = [
                     dom for dom, dinfo in metadata.items()
@@ -395,7 +429,8 @@ def process_multiwoz(data_path: str = "data/raw/multiwoz/data.json",
                     if len(span) < 5:
                         continue
                     act_type, slot, value, start, end = span[:5]
-                    if not act_type.endswith("-Inform") or act_type == "general-inform":
+                    # act_type for pseudo-spans is domain-Inform
+                    if not act_type.lower().endswith("-inform") or act_type.lower() == "general-inform":
                         continue
 
                     domain = act_type.split("-")[0].lower()
@@ -414,7 +449,8 @@ def process_multiwoz(data_path: str = "data/raw/multiwoz/data.json",
 
                     dropped_span = " ".join(words[start:end + 1])
                     ablat_words  = words[:start] + words[end + 1:]
-                    ablat_text   = " ".join(ablat_words) or "."
+                    # Ensure at least a period if empty
+                    ablat_text   = " ".join(ablat_words) if ablat_words else "."
 
                     hist = context_turns[-3:]
                     ctx  = dom_str + "\n".join(hist) + "\n" if hist else dom_str
@@ -461,6 +497,7 @@ def process_multiwoz(data_path: str = "data/raw/multiwoz/data.json",
             else:
                 tracker.push(set())
 
+            prev_meta = turn.get("metadata", {})
             context_turns.append(spk + text)
 
     print(f"  MultiWOZ: {len(out_rows)} rows before balance.")

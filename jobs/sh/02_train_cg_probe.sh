@@ -26,8 +26,8 @@ SEED="${SEED:-42}"
 OUT_DIR="${OUT_DIR:-runs/cg_probe}"
 
 # --- データパス ---
-TRAIN_DATA="data/processed/case_grammar/cg_v1_sgd.jsonl"
-DEV_DATA="data/processed/case_grammar/cg_v1_multiwoz.jsonl"
+TRAIN_DATA="data/processed/case_grammar/cg_train.jsonl"
+DEV_DATA="data/processed/case_grammar/cg_dev.jsonl"
 
 echo "========================================="
 echo "Step 2: CG Contrastive Probe Training"
