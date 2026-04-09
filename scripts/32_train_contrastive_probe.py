@@ -235,6 +235,8 @@ def evaluate_cg(
     tuned     = tune_threshold_per_class(y_true, p_pred_m, grid=None)
     thresholds = np.array(tuned["thresholds"])  # (C,)
     metrics   = eval_with_per_class_threshold(y_true, p_pred_m, thresholds)
+    metrics["threshold_dict"] = tuned.get("threshold_dict", {})
+
 
     std_acc, str_acc = _pair_accuracy(y_true, p_pred_m, p_pred_f, thresholds)
     metrics["pair_accuracy_standard"] = std_acc
@@ -452,6 +454,7 @@ def main():
             "macro_f1":   macro_f1,
             "pair_accuracy_standard": std_acc,
             "pair_accuracy_strict":   str_acc,
+            "threshold_dict": dev_metrics.get("threshold_dict", {}),
         }
         if enable_cg:
             log_rec["by_case_role"]  = dev_metrics.get("by_case_role",  {})

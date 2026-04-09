@@ -37,7 +37,7 @@ do
 done
 
 # QA-SRL はオプション
-if [ ! -e "temp_qasrl/qasrl-v2/orig/dev.jsonl.gz" ]; then
+if [ ! -e "temp_qasrl/qasrl-bank/data/qasrl-v2/orig/dev.jsonl.gz" ]; then
     echo "[WARN] QA-SRL not found (will be skipped automatically)"
 fi
 

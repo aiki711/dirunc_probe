@@ -380,7 +380,8 @@ def process_multiwoz(data_path: str = "data/raw/multiwoz/data.json",
 
             if is_user:
                 spans    = turn.get("span_info", [])
-                metadata = turn.get("metadata", {})
+                # MultiWOZ user turns lack metadata; it is stored in the subsequent system turn.
+                metadata = log[turn_idx + 1].get("metadata", {}) if turn_idx + 1 < len(log) else {}
 
                 # Fallback: if span_info is empty, reconstruct from metadata diff
                 if not spans:
@@ -496,9 +497,10 @@ def process_multiwoz(data_path: str = "data/raw/multiwoz/data.json",
                 tracker.push(turn_roles)
             else:
                 tracker.push(set())
+                prev_meta = turn.get("metadata", {})
 
-            prev_meta = turn.get("metadata", {})
             context_turns.append(spk + text)
+
 
     print(f"  MultiWOZ: {len(out_rows)} rows before balance.")
     return _balance_pairs(out_rows)
@@ -521,7 +523,7 @@ def _qasrl_wh_to_role(wh: str) -> str:
     return mapping.get(wh.lower(), ROLE_THEME)
 
 
-def process_qasrl(data_path: str = "temp_qasrl/qasrl-v2/orig/dev.jsonl.gz",
+def process_qasrl(data_path: str = "temp_qasrl/qasrl-bank/data/qasrl-v2/orig/dev.jsonl.gz",
                   limit: int = 0) -> List[dict]:
     print(f"Processing QA-SRL ({data_path}) ...")
     if not Path(data_path).exists():

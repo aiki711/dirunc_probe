@@ -18,8 +18,33 @@ Saved 5688 SGD rows -> data/processed/case_grammar/cg_v1_sgd.jsonl
     Source         115
     Goal            96
 Processing MultiWOZ (Case Grammar) ...
-  MultiWOZ: 0 rows before balance.
-Processing QA-SRL (temp_qasrl/qasrl-v2/orig/dev.jsonl.gz) ...
-  Warning: temp_qasrl/qasrl-v2/orig/dev.jsonl.gz not found.
+  MultiWOZ: 75378 rows before balance.
+Saved 40000 MultiWOZ rows -> data/processed/case_grammar/cg_v1_multiwoz.jsonl
+  Saturation distribution (missing rows):
+    [0.0] 14681  ####################
+    [0.2]  2036  ##
+    [0.4]    93  
+    [0.6]   793  #
+    [1.0]  2397  ###
+  is_saturated=True: 2397 / 20000
+  Case role distribution (missing rows):
+    Manner        7321
+    Time          5000
+    Theme         2679
+    Location      2128
+    Source        1688
+    Goal          1184
+Processing QA-SRL (temp_qasrl/qasrl-bank/data/qasrl-v2/orig/dev.jsonl.gz) ...
+  QA-SRL: 76974 rows before balance.
+Saved 18060 QA-SRL rows -> data/processed/case_grammar/cg_v1_qasrl.jsonl
+  Saturation distribution (missing rows):
+    [0.0]  9030  ####################
+  is_saturated=True: 0 / 9030
+  Case role distribution (missing rows):
+    Manner        3010
+    Agent         1505
+    Theme         1505
+    Location      1505
+    Time          1505
 
 Done. Case Grammar datasets saved to data/processed/case_grammar
