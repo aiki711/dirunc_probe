@@ -1,0 +1,44 @@
+#!/bin/bash
+#PBS -N cg_probe_train
+#PBS -l select=1:ncpus=8:mem=64gb:ngpus=1
+#PBS -l walltime=06:00:00
+#PBS -j oe
+#PBS -o logs/cg_probe_train.log
+
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-/home/s2550009/dirunc_probe}"
+
+echo "========================================="
+echo "Job: Case Grammar Contrastive Probe"
+echo "Start: $(date)"
+echo "Host : $(hostname)"
+echo "GPU  : $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo N/A)"
+echo "========================================="
+
+source /etc/profile.d/conda.sh 2>/dev/null || true
+conda activate dirunc_probe 2>/dev/null || true
+
+export PYTHONPATH="${PBS_O_WORKDIR:-$(pwd)}:${PYTHONPATH:-}"
+mkdir -p logs runs/cg_probe
+
+MODEL="google/gemma-2-2b-it"
+LAYER=16
+
+# Train on SGD Case Grammar pairs
+# Dev: MultiWOZ CG (zero-shot domain transfer test)
+python3 scripts/32_train_contrastive_probe.py \
+  --model_name "${MODEL}" \
+  --layer_idx  ${LAYER} \
+  --train_data "data/processed/case_grammar/cg_v1_sgd.jsonl" \
+  --dev_data   "data/processed/case_grammar/cg_v1_multiwoz.jsonl" \
+  --out_dir    "runs/cg_probe" \
+  --batch_size 8 \
+  --epochs     5 \
+  --lr         5e-4 \
+  --margin     0.2 \
+  --lambda_margin 1.0 \
+  2>&1
+
+echo "========================================="
+echo "End: $(date)"
+echo "========================================="

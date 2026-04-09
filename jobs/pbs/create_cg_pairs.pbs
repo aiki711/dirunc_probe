@@ -1,0 +1,30 @@
+#!/bin/bash
+#PBS -N cg_data_gen
+#PBS -l select=1:ncpus=4:mem=32gb
+#PBS -l walltime=02:00:00
+#PBS -j oe
+#PBS -o logs/cg_data_gen.log
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-/home/s2550009/dirunc_probe}"
+
+echo "========================================="
+echo "Job: Case Grammar Pair Generation"
+echo "Start: $(date)"
+echo "Host : $(hostname)"
+echo "========================================="
+
+# Activate environment
+source /etc/profile.d/conda.sh 2>/dev/null || true
+conda activate dirunc_probe 2>/dev/null || true
+
+export PYTHONPATH="${PBS_O_WORKDIR:-$(pwd)}:${PYTHONPATH:-}"
+
+mkdir -p logs data/processed/case_grammar
+
+python3 scripts/33_create_case_grammar_pairs.py 2>&1
+
+echo "========================================="
+echo "End: $(date)"
+echo "========================================="

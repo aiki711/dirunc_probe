@@ -1,0 +1,62 @@
+=========================================
+Job: Case Grammar Pair Generation
+Start: Tue Apr  7 23:49:51 JST 2026
+Host : spcc-084
+=========================================
+Processing SGD (Case Grammar) ...
+  SGD: 138696 rows before balance.
+Saved 5688 SGD rows -> data/processed/case_grammar/cg_v1_sgd.jsonl
+  Saturation distribution (missing rows):
+    [0.0]   527  #############
+    [0.2]   353  #########
+    [0.4]   602  ###############
+    [0.6]   792  ####################
+    [0.8]     8  
+    [1.0]   562  ##############
+  is_saturated=True: 562 / 2844
+  Case role distribution (missing rows):
+    Theme          993
+    Manner         474
+    Time           474
+    Agent          429
+    Location       263
+    Source         115
+    Goal            96
+Processing MultiWOZ (Case Grammar) ...
+  MultiWOZ: 109370 rows before balance.
+Saved 40000 MultiWOZ rows -> data/processed/case_grammar/cg_v1_multiwoz.jsonl
+  Saturation distribution (missing rows):
+    [0.0] 14873  ####################
+    [0.2]  1813  ##
+    [0.4]    36  
+    [1.0]  3278  ####
+  is_saturated=True: 3278 / 20000
+  Case role distribution (missing rows):
+    Manner        7435
+    Location      5000
+    Time          5000
+    Theme         2565
+Processing QA-SRL (temp_qasrl/qasrl-v2/orig/dev.jsonl.gz) ...
+  QA-SRL: 76974 rows before balance.
+Saved 18060 QA-SRL rows -> data/processed/case_grammar/cg_v1_qasrl.jsonl
+  Saturation distribution (missing rows):
+    [0.0]  9030  ####################
+  is_saturated=True: 0 / 9030
+  Case role distribution (missing rows):
+    Manner        3010
+    Agent         1505
+    Theme         1505
+    Location      1505
+    Time          1505
+
+Done. Case Grammar datasets saved to data/processed/case_grammar
+=========================================
+End: Tue Apr  7 23:50:55 JST 2026
+=========================================
+
+=================================== RESOURCE INFORMATION ===================================
+ Requested Resource:
+ mem=32gb,walltime=02:00:00,ncpus=4,place=pack 
+ Used Resource: 
+ mem=292860kb,walltime=00:01:08,ncpus=4,cpupercent=70,vmem=300888kb
+============================================================================================
