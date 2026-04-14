@@ -3,6 +3,7 @@ dirunc_probe/
 data/
 analysis_results/
 log/
+logs/
 runs/
 temp_multiwoz/
 temp_qasrl/
