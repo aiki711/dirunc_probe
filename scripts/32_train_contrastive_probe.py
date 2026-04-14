@@ -106,7 +106,16 @@ class PairedDirUncDataset(Dataset):
                     "is_saturated":     bool(meta.get("is_saturated", False)),
                     "predicate":        meta.get("predicate", ""),
                     "theme_domain":     meta.get("theme_domain", ""),
+                    "dataset_name":    pid.split("::")[0] if "::" in pid else "unknown"
                 })
+
+        # Statistics
+        stats = defaultdict(int)
+        for item in self.pairs:
+            stats[item["dataset_name"]] += 1
+        print(f"  Total pairs loaded: {len(self.pairs)}")
+        for ds, count in sorted(stats.items()):
+            print(f"    - {ds:12s}: {count:5d} pairs")
 
     def __len__(self):
         return len(self.pairs)
@@ -123,6 +132,7 @@ class PairedDirUncDataset(Dataset):
             "case_role":        item["case_role"],
             "saturation_score": item["saturation_score"],
             "is_saturated":     item["is_saturated"],
+            "dataset_name":     item["dataset_name"],
         }
 
 
@@ -158,6 +168,7 @@ def collate_paired_batch(tokenizer, batch, max_length):
         "case_role":        [b["case_role"]        for b in batch],
         "saturation_score": [b["saturation_score"] for b in batch],
         "is_saturated":     [b["is_saturated"]     for b in batch],
+        "dataset_name":     [b["dataset_name"]     for b in batch],
     }
 
 
@@ -194,6 +205,7 @@ def evaluate_cg(
 
     ys, ps_m, ps_f = [], [], []
     roles_list, sat_scores, is_sat_list = [], [], []
+    ds_list = []
     total_loss, n = 0.0, 0
 
     with torch.no_grad():
@@ -218,6 +230,7 @@ def evaluate_cg(
                 roles_list.extend(batch["case_role"])
                 sat_scores.extend(batch["saturation_score"])
                 is_sat_list.extend(batch["is_saturated"])
+                ds_list.extend(batch["dataset_name"])
 
             y_zero = torch.zeros_like(y)
             loss_f = F.binary_cross_entropy_with_logits(logits_f, y_zero)
@@ -300,6 +313,20 @@ def evaluate_cg(
             }
         metrics["by_saturation"] = bin_acc
 
+        # --- Per dataset pair accuracy ---
+        ds_acc: dict = {}
+        ds_arr = np.array(ds_list)
+        for ds in sorted(set(ds_arr)):
+            didx = np.where(ds_arr == ds)[0]
+            if len(didx) == 0: continue
+            y_d = y_true[didx]; pm_d = p_pred_m[didx]; pf_d = p_pred_f[didx]
+            acc_s, acc_str = _pair_accuracy(y_d, pm_d, pf_d, thresholds)
+            ds_acc[ds] = {
+                "n": int(len(didx)),
+                "pair_acc_standard": round(acc_s, 4),
+            }
+        metrics["by_dataset"] = ds_acc
+
     return metrics
 
 
@@ -318,6 +345,12 @@ def _print_cg_metrics(metrics: dict) -> None:
             print(f"    {bin_key:20s}  n={v['n']:5d}  "
                   f"PairAcc(std)={v['pair_acc_standard']:.3f}  "
                   f"strict={v['pair_acc_strict']:.3f}")
+
+    if "by_dataset" in metrics:
+        print("\n  [CG] Per-dataset pair accuracy:")
+        for ds, v in sorted(metrics["by_dataset"].items()):
+            print(f"    {ds:12s}  n={v['n']:5d}  "
+                  f"PairAcc(std)={v['pair_acc_standard']:.3f}")
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +492,7 @@ def main():
         if enable_cg:
             log_rec["by_case_role"]  = dev_metrics.get("by_case_role",  {})
             log_rec["by_saturation"] = dev_metrics.get("by_saturation", {})
+            log_rec["by_dataset"]   = dev_metrics.get("by_dataset",   {})
 
         with (out_dir / "log.jsonl").open("a") as f:
             f.write(json.dumps(log_rec) + "\n")
