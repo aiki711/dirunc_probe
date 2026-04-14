@@ -373,6 +373,8 @@ def main():
     parser.add_argument("--out_dir",       type=str,   default="runs/contrastive_probe")
     parser.add_argument("--no_cg_eval",   action="store_true",
                         help="Disable Case-Grammar sub-analyses (for legacy datasets)")
+    parser.add_argument("--resume",       action="store_true", help="Resume from checkpoint")
+    parser.add_argument("--start_epoch",  type=int, default=1, help="Epoch to start from")
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -416,10 +418,17 @@ def main():
     best_path = out_dir / f"best_probe_layer{args.layer_idx}.pt"
     best_score = -1.0
 
+    if args.resume:
+        if best_path.exists():
+            print(f"Resuming from {best_path}")
+            model.head.load_state_dict(torch.load(best_path, map_location=device))
+        else:
+            print(f"Warning: {best_path} not found. Starting from scratch.")
+
     print(f"Training pairs: {len(train_ds)}, Dev pairs: {len(dev_ds)}")
     print(f"CG analysis: {'enabled' if enable_cg else 'disabled'}")
 
-    for ep in range(1, args.epochs + 1):
+    for ep in range(args.start_epoch, args.epochs + 1):
         model.train()
         total_loss, n = 0.0, 0
 

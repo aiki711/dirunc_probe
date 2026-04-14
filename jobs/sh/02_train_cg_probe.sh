@@ -24,6 +24,8 @@ MARGIN="${MARGIN:-0.2}"
 LAMBDA_MARGIN="${LAMBDA_MARGIN:-1.0}"
 SEED="${SEED:-42}"
 OUT_DIR="${OUT_DIR:-runs/cg_probe}"
+RESUME="${RESUME:-false}"
+START_EPOCH="${START_EPOCH:-1}"
 
 # --- データパス ---
 TRAIN_DATA="data/processed/case_grammar/cg_train.jsonl"
@@ -83,7 +85,9 @@ python3 scripts/32_train_contrastive_probe.py \
     --train_data      "${TRAIN_DATA}" \
     --dev_data        "${DEV_DATA}" \
     --out_dir         "${OUT_DIR}" \
-    2>&1 | tee logs/cg_probe_train.log
+    --start_epoch     "${START_EPOCH}" \
+    $( [ "${RESUME}" = "true" ] && echo "--resume" ) \
+    2>&1 | tee -a logs/cg_probe_train.log
 
 echo "========================================="
 echo "End: $(date)"
