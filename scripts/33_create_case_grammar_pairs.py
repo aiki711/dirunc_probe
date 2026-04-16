@@ -284,6 +284,11 @@ def process_sgd(limit_dialogues: int = 0) -> List[dict]:
                                 sat_score = (n_filled - 1) / n_total if n_total else 0.0
                                 is_sat    = False
 
+                            # Strict check: ensure the value string actually exists in the utterance.
+                            # Some metadata in SGD might refer to slots not uttered in this turn.
+                            if val_str.strip().lower() not in text.lower():
+                                continue
+
                             # Build context prefix
                             dom_str = f"[Domain: {svc} / Intent: {intent}]\n"
                             hist    = context_turns[-3:]
@@ -293,7 +298,8 @@ def process_sgd(limit_dialogues: int = 0) -> List[dict]:
                             ablat_text      = replace_values_in_text(text, [val_str], mode="delete")
                             unresolved_text = ctx + spk + ablat_text
 
-                            if resolved_text == unresolved_text:
+                            # Double check that something actually changed
+                            if text.strip() == ablat_text.strip():
                                 continue
 
                             pid = f"sgd::{did}::t{t_idx}::{sl}"
