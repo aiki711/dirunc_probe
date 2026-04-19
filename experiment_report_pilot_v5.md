@@ -24,7 +24,8 @@ This report provides a truly fair comparison by cleaning the Mechanical version 
 ### MULTIWOZ Samples
 
 #### Sample 1 (Role: goal)
-- **Context**: `[Domain: restaurant, train]Assistant: Yes, there is. What's your price range?`
+- **Context**: `[Domain: restaurant, train]
+Assistant: Yes, there is. What's your price range?`
 - **Filled**: `Yes I'm looking for a train to Cambridge that same day.` (N/O/M: )
 - **Mech Missing**: `Yes I'm looking for a train to that same day.` (N/O/M: Naturalness: 2, Omission: 5, MinimalChange: 4)
 - **LLM Missing**: `Yes I'm looking for a train that same day.` (N/O/M: )

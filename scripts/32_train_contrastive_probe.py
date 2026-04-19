@@ -17,7 +17,7 @@ sys.path.append(os.getcwd())
 try:
     from scripts.common import DIRS
     import importlib.util
-    spec = importlib.util.spec_from_file_location("train_probe", "scripts/03_train_probe.py")
+    spec = importlib.util.spec_from_file_location("train_probe", "scripts/archive/03_train_probe.py")
     train_probe = importlib.util.module_from_spec(spec)
     sys.modules["train_probe"] = train_probe
     spec.loader.exec_module(train_probe)
