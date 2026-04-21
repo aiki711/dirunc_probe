@@ -1,0 +1,90 @@
+{
+  "correct": {
+    "Agent": {
+      "filled": "[Target Verb: describe] But mineralogists have special terms to describe luster .",
+      "missing": "But have special terms to describe luster.",
+      "prob_f": 0.0,
+      "prob_m": 0.0014,
+      "diff": 0.0014
+    },
+    "Time": {
+      "filled": "[Domain: restaurant]\nAssistant: Sure.  What time would you like the reservation for?\nUser: I need a table for 2 people on Monday at 14:30.\nAssistant: I'm sorry, a table isn't available.  Perhaps a different day or time slot would work for you?\nUser: Can you try 13:30 instead?  Thanks.",
+      "missing": "[Domain: restaurant]\nAssistant: Sure.  What time would you like the reservation for?\nUser: I need a table for 2 people on Monday at 14:30.\nAssistant: I'm sorry, a table isn't available.  Perhaps a different day or time slot would work for you?\nUser: Can you try instead? Thanks.",
+      "prob_f": 0.0588,
+      "prob_m": 0.1501,
+      "diff": 0.0913
+    },
+    "Source": {
+      "filled": "[Domain: attraction, train]\nAssistant: Sure, the address is Regent Street, the postcode is cb21dq, and the entrance fee is free. Can I help you with anything else?\nUser: Thank you. I also need to find a train leaving on Monday.\nAssistant: Certainly, where are you departing from and what is your destination please?\nUser: I'm departing from london liverpool street to cambridge.",
+      "missing": "[Domain: attraction, train]\nAssistant: Sure, the address is Regent Street, the postcode is cb21dq, and the entrance fee is free. Can I help you with anything else?\nUser: Thank you. I also need to find a train leaving on Monday.\nAssistant: Certainly, where are you departing from and what is your destination please?\nUser: I'm departing from to cambridge.",
+      "prob_f": 0.216,
+      "prob_m": 0.9139,
+      "diff": 0.6979
+    },
+    "Goal": {
+      "filled": "[Domain: train]\nAssistant: What day would you like to travel to Broxbourne?\nUser: I need to leave on Thursday.\nAssistant: Do you have time travel preference?\nUser: Yes, time travel would be fine. But I need to get to Cambridge by 11:45 at the latest.",
+      "missing": "[Domain: train]\nAssistant: What day would you like to travel to Broxbourne?\nUser: I need to leave on Thursday.\nAssistant: Do you have time travel preference?\nUser: Yes, time travel would be fine. But I need to get there by 11:45 at the latest.",
+      "prob_f": 0.1432,
+      "prob_m": 0.2129,
+      "diff": 0.0697
+    },
+    "Theme": {
+      "filled": "[Domain: restaurant]\nUser: Hi, I'm looking for an expensive restaurant.\nAssistant: We have quite a few expensive restaurants.  Do you have any preferences as far as area or cuisine type?\nUser: Thai food, in the centre of town.",
+      "missing": "[Domain: restaurant]\nUser: Hi, I'm looking for an expensive restaurant.\nAssistant: We have quite a few expensive restaurants.  Do you have any preferences as far as area or cuisine type?\nUser: food, in the centre of town.",
+      "prob_f": 0.0049,
+      "prob_m": 0.4462,
+      "diff": 0.4413
+    },
+    "Manner": {
+      "filled": "[Target Verb: look] The different ways that silica tetrahedrons can join together cause these two minerals to look very different .",
+      "missing": "The different ways that silica tetrahedrons can join together cause these two minerals to look.",
+      "prob_f": 0.0202,
+      "prob_m": 0.6028,
+      "diff": 0.5826
+    }
+  },
+  "incorrect": {
+    "Agent": {
+      "filled": "[Target Verb: explain] Can you explain why ?",
+      "missing": "Can explain why?",
+      "prob_f": 0.0001,
+      "prob_m": 0.0,
+      "diff": -0.0001
+    },
+    "Time": {
+      "filled": "[Domain: restaurant, hotel]\nAssistant: there are no vegetarian food restaurants.\nUser: Okay. Is there one that serves International food?\nAssistant: There are three locations that serve international cuisine. The Missing Sock, The Varsity Restaurant, and the Bloomsbury Restaurant. Are you interested in any of these?\nUser: Sure, can I please get a table on Sunday at 13:00 for 6 people at The Missing Sock?",
+      "missing": "[Domain: restaurant, hotel]\nAssistant: there are no vegetarian food restaurants.\nUser: Okay. Is there one that serves International food?\nAssistant: There are three locations that serve international cuisine. The Missing Sock, The Varsity Restaurant, and the Bloomsbury Restaurant. Are you interested in any of these?\nUser: Sure, can I please get a table at 13:00 for 6 people at The Missing Sock?",
+      "prob_f": 0.4322,
+      "prob_m": 0.3833,
+      "diff": -0.0489
+    },
+    "Source": {
+      "filled": "[Domain: Flights_1 / Intent: SearchOnewayFlight]\nAssistant: Yes, what is your present location to search for the flight and let me know about the starting date of your travel plan.\nUser: I want to search the flight from LA on 3rd of this month.\nAssistant: To which place you are planning to visit?\nUser: I have planned to visit Vegas, search for the flights to this place.",
+      "missing": "[Domain: Flights_1 / Intent: SearchOnewayFlight]\nAssistant: Yes, what is your present location to search for the flight and let me know about the starting date of your travel plan.\nUser: I want to search the flight from LA on 3rd of this month.\nAssistant: To which place you are planning to visit?\nUser: I have planned to visit Vegas, search for the flights to this place.",
+      "prob_f": 0.3794,
+      "prob_m": 0.3794,
+      "diff": 0.0
+    },
+    "Goal": {
+      "filled": "[Domain: Flights_2 / Intent: SearchRoundtripFlights]\nUser: I'm looking for a flight.\nAssistant: What day would you like to return and where are you going?\nUser: Atlanta, GA returning on the 13th.",
+      "missing": "[Domain: Flights_2 / Intent: SearchRoundtripFlights]\nUser: I'm looking for a flight.\nAssistant: What day would you like to return and where are you going?\nUser: returning on the 13th.",
+      "prob_f": 0.3572,
+      "prob_m": 0.2353,
+      "diff": -0.122
+    },
+    "Theme": {
+      "filled": "[Domain: attraction, train]\nAssistant: There are 6 trains. The closest arrival is TR4045, which leaves at 10:16 and arrives at 11:35. Would you like me to book this train for you?\nUser: No, but can you tell me the total travel time for that train?\nAssistant: It is a 79 minute trip.\nUser: Thank you I also am looking for the all saints church",
+      "missing": "[Domain: attraction, train]\nAssistant: There are 6 trains. The closest arrival is TR4045, which leaves at 10:16 and arrives at 11:35. Would you like me to book this train for you?\nUser: No, but can you tell me the total travel time for that train?\nAssistant: It is a 79 minute trip.\nUser: Thank you I also am looking for the",
+      "prob_f": 0.0519,
+      "prob_m": 0.0022,
+      "diff": -0.0497
+    },
+    "Manner": {
+      "filled": "[Domain: hotel, train]\nAssistant: Okay, I have quite a few. Can you give me some more information?\nUser: I'm departing from peterborough on saturday. I want to arrive by 16:00.\nAssistant: I would recommend train ID TR5049 which leaves Peterborough at 14:48 and arrives in Cambridge at 15:38.  There are earlier options as well if you wish.\nUser: That would be perfect. For 7 people.",
+      "missing": "[Domain: hotel, train]\nAssistant: Okay, I have quite a few. Can you give me some more information?\nUser: I'm departing from peterborough on saturday. I want to arrive by 16:00.\nAssistant: I would recommend train ID TR5049 which leaves Peterborough at 14:48 and arrives in Cambridge at 15:38.  There are earlier options as well if you wish.\nUser: That would be perfect.",
+      "prob_f": 0.1223,
+      "prob_m": 0.0341,
+      "diff": -0.0881
+    }
+  }
+}

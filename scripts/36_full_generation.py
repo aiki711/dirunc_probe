@@ -18,19 +18,19 @@ FEW_SHOT_EXAMPLES = {
         {"filled": "Can you book it for Hobson's House?", "omit": "Hobson's House", "missing": "Can you book it for me?"}
     ],
     "where": [
-        {"filled": "I'll pick it up in Portland, OR.", "omit": "Portland, OR", "missing": "I'll pick it up."},
+        {"filled": "I'm departing from London Liverpool Street to Cambridge.", "omit": "London Liverpool Street", "missing": "I'm departing to Cambridge."},
         {"filled": "A landslide happens when a large amount of soil suddenly falls down a slope.", "omit": "down a slope", "missing": "A landslide happens when a large amount of soil suddenly falls."}
     ],
     "when": [
-        {"filled": "Im going to cambridge on thursday", "omit": "thursday", "missing": "Im going to cambridge."},
+        {"filled": "I am arriving at 15:15.", "omit": "15:15", "missing": "I am arriving."},
         {"filled": "The event starts at afternoon 1:15", "omit": "afternoon 1:15", "missing": "The event starts."}
     ],
     "how": [
-        {"filled": "I would like an expensive restaurant in the north.", "omit": "expensive", "missing": "I would like a restaurant in the north."},
+        {"filled": "I'd like to dine in a Thai restaurant.", "omit": "Thai", "missing": "I'd like to dine in a restaurant."},
         {"filled": "Some transformers increase the voltage.", "omit": "Some transformers", "missing": "This increases the voltage."}
     ],
     "what": [
-         {"filled": "Italian sounds good. Can you give me an address?", "omit": "Italian", "missing": "That sounds good. Can you give me an address?"},
+         {"filled": "Can you find some information on The Missing Sock?", "omit": "The Missing Sock", "missing": "Can you find out some information for me?"},
          {"filled": "The bowling ball is made of matter, which is packed.", "omit": "matter", "missing": "The bowling ball is made of something, which is packed."}
     ]
 }
@@ -48,8 +48,8 @@ Task: Given a Context and a "Filled" sentence, create a "Missing" version where 
 Constraints:
 1. The "Missing" version MUST be perfectly grammatical, natural, and fluent English.
 2. The "Missing" version MUST NOT contain the information indicated in "Omit information" ("{dropped_span}").
-3. If simply removing "{dropped_span}" leaves a dangling preposition or marker (like "on", "at", "to", "by", "of") that makes the sentence ungrammatical, you MUST remove or adjust those markers as well.
-4. You may use indefinite pronouns (e.g., "something", "someone", "it", "then") or adjust the phrase structure to maintain natural flow if necessary.
+3. CRITICAL: If removing "{dropped_span}" leaves a trailing or dangling preposition (like "at", "on", "to", "from", "by", "of", "with", "for"), you MUST remove that preposition as well to ensure a clean, natural sentence.
+4. Prioritize "Natural Omission" (deleting both the info and its markers) over "Substitution" (using words like someone/something). Only use substitution if the sentence becomes totally unreadable without it.
 5. The change should be as minimal as possible while obeying the above rules.
 6. Output ONLY the resulting sentence, no explanation.
 
