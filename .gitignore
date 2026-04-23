@@ -2,6 +2,8 @@
 .env
 dirunc_probe/
 data/
+archive_data/
+archive_runs/
 analysis_results/
 log/
 logs/
@@ -13,5 +15,5 @@ __pycache__/
 .DS_Store
 configs/
 .hf_token
-natural_probe.log
+natural_probe.logs
 scripts/40_generation.log
