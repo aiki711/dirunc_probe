@@ -97,7 +97,7 @@ class DistributedGenerator:
                         print(f"[{key_label}][{model_id}] DAILY QUOTA EXHAUSTED (RPD). Sleeping for 1 hour...")
                         retry_delay = 3600
                     else:
-                        print(f"[{key_label}][{model_id}] Temporary quota hit (TPM/RPM). Sleeping for 1 minute...")
+                        # print(f"[{key_label}][{model_id}] Temporary quota hit (TPM/RPM). Sleeping for 1 minute...")
                         retry_delay = 60
                     
                     self.queue.put_nowait((row, output_path))
@@ -105,7 +105,7 @@ class DistributedGenerator:
                     await asyncio.sleep(retry_delay)
                 
                 except Exception as e:
-                    print(f"[{key_label}][{model_id}] Error: {e}")
+                    # print(f"[{key_label}][{model_id}] Error: {e}")
                     self.queue.put_nowait((row, output_path))
                     self.queue.task_done()
                     await asyncio.sleep(60)
@@ -187,8 +187,8 @@ async def main():
 
     try:
         while not generator.queue.empty():
-            await asyncio.sleep(60)
-            print(f"Remaining tasks: {generator.queue.qsize()}")
+            await asyncio.sleep(300)
+            print(f"[{time.strftime('%H:%M:%S')}] Remaining tasks: {generator.queue.qsize()}")
         await generator.queue.join()
     except KeyboardInterrupt:
         print("Stopping...")
