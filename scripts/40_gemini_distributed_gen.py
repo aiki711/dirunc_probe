@@ -3,28 +3,24 @@ import json
 import os
 import time
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
 from google import genai
-from google.api_core import exceptions
 
 # --- CONFIGURATION (STRICT ABSOLUTE PATHS) ---
 BASE_DIR = Path("/home/admin/work/s2550009/dirunc_probe")
 DATA_DIR = BASE_DIR / "data/processed/case_grammar"
-LOG_PATH = BASE_DIR / "scripts/40_generation.log"
+LOG_PATH = BASE_DIR / "logs/40_generation.log"
+STATS_PATH = BASE_DIR / "scripts/40_usage_stats.json"
 
+# 無料枠の複数モデルを併用して合計RPDを稼ぐ設定
 MODELS_CONFIG = {
-    "models/gemini-2.0-flash": {"limit_rpm": 15},
-    "models/gemini-2.0-flash-lite": {"limit_rpm": 15},
-    "models/gemini-2.5-flash": {"limit_rpm": 15},
-    "models/gemini-2.5-pro": {"limit_rpm": 2},
-    "models/gemini-2.5-flash-lite": {"limit_rpm": 15},
-    "models/gemini-flash-latest": {"limit_rpm": 15},
-    "models/gemini-flash-lite-latest": {"limit_rpm": 15},
-    "models/gemini-pro-latest": {"limit_rpm": 2},
-    "models/gemini-3-flash-preview": {"limit_rpm": 15},
-    "models/gemini-3.1-pro-preview": {"limit_rpm": 2},
-    "models/gemini-3.1-flash-lite-preview": {"limit_rpm": 15},
-    "models/gemini-3.1-flash-live-preview": {"limit_rpm": 15},
+    # 8B相当 (Flash-Lite 最新版)
+    "models/gemini-flash-lite-latest": {"limit_rpm": 15, "limit_rpd": 1400},
+    # 標準Flash (最新版)
+    "models/gemini-flash-latest": {"limit_rpm": 15, "limit_rpd": 20},
+    # Pro (最新版)
+    "models/gemini-pro-latest": {"limit_rpm": 2, "limit_rpd": 45},
 }
 
 def load_api_keys():
@@ -45,11 +41,57 @@ def load_api_keys():
 class DistributedGenerator:
     def __init__(self, api_keys):
         self.clients = [genai.Client(api_key=k, http_options={'api_version': 'v1beta'}) for k in api_keys]
+        self.api_keys = api_keys
         self.queue = asyncio.Queue()
         self.results_lock = asyncio.Lock()
+        self.stats_lock = asyncio.Lock()
         self.finished_ids = set()
         self.stopped = False
-        print(f"Initialized with {len(self.clients)} API keys.")
+        self.usage_stats = self.load_stats()
+        print(f"Initialized with {len(self.clients)} API keys and {len(MODELS_CONFIG)} models.")
+
+    def load_stats(self):
+        if STATS_PATH.exists():
+            try:
+                with STATS_PATH.open("r", encoding="utf-8") as f:
+                    return json.load(f)
+            except: pass
+        return {}
+
+    async def save_stats(self):
+        async with self.stats_lock:
+            with STATS_PATH.open("w", encoding="utf-8") as f:
+                json.dump(self.usage_stats, f, ensure_ascii=False, indent=2)
+
+    def get_today_str(self):
+        # 日本時間17時にリセットされるため、17時間引いた日付を「今日」として扱う
+        return (datetime.now() - timedelta(hours=17)).strftime("%Y-%m-%d")
+
+    async def increment_usage(self, key_index, model_id):
+        today = self.get_today_str()
+        stat_key = f"Key{key_index+1}:{model_id}"
+        async with self.stats_lock:
+            if today not in self.usage_stats:
+                self.usage_stats[today] = {}
+            self.usage_stats[today][stat_key] = self.usage_stats[today].get(stat_key, 0) + 1
+        await self.save_stats()
+
+    def get_usage(self, key_index, model_id):
+        today = self.get_today_str()
+        stat_key = f"Key{key_index+1}:{model_id}"
+        return self.usage_stats.get(today, {}).get(stat_key, 0)
+
+    async def wait_until_tomorrow(self, key_label, model_id):
+        now = datetime.now()
+        # 次の日本時間17:01:00を計算
+        if now.hour < 17:
+            target = now.replace(hour=17, minute=1, second=0, microsecond=0)
+        else:
+            target = (now + timedelta(days=1)).replace(hour=17, minute=1, second=0, microsecond=0)
+        
+        wait_seconds = (target - now).total_seconds()
+        print(f"[{time.strftime('%H:%M:%S')}][{key_label}][{model_id}] RPD LIMIT REACHED. Sleeping until reset (JST 17:01, {target.strftime('%Y-%m-%d %H:%M:%S')})...")
+        await asyncio.sleep(wait_seconds)
 
     async def load_finished_ids(self, paths):
         for p in paths:
@@ -61,13 +103,18 @@ class DistributedGenerator:
                         except: pass
         print(f"Loaded {len(self.finished_ids)} already finished IDs.")
 
-    async def worker(self, key_index, model_id, rpm):
+    async def worker(self, key_index, model_id, rpm, rpd_limit):
         client = self.clients[key_index]
         key_label = f"Key{key_index+1}"
         delay = 60.0 / rpm
-        print(f"Worker [{key_label}][{model_id}] started.")
+        print(f"Worker [{key_label}][{model_id}] started. (RPM:{rpm}, RPD_Limit:{rpd_limit})")
         
         while not self.stopped:
+            # Check RPD limit before taking a task
+            if self.get_usage(key_index, model_id) >= rpd_limit:
+                await self.wait_until_tomorrow(key_label, model_id)
+                continue
+
             try:
                 try:
                     row, output_path = await asyncio.wait_for(self.queue.get(), timeout=5.0)
@@ -87,31 +134,40 @@ class DistributedGenerator:
                                 f.write(json.dumps(res, ensure_ascii=False) + "\n")
                                 f.flush()
                             self.finished_ids.add(row["id"])
+                        await self.increment_usage(key_index, model_id)
                     
                     self.queue.task_done()
                     await asyncio.sleep(delay)
 
-                except exceptions.ResourceExhausted as e:
-                    err_msg = str(e)
-                    if "limit: 0" in err_msg or "Daily" in err_msg or "RPD" in err_msg:
-                        print(f"[{key_label}][{model_id}] DAILY QUOTA EXHAUSTED (RPD). Sleeping for 1 hour...")
-                        retry_delay = 3600
+                except Exception as e:
+                    err_msg = str(e).upper()
+                    now_str = time.strftime('%H:%M:%S')
+                    
+                    if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "QUOTA" in err_msg:
+                        # 429 Resource Exhausted Error
+                        if any(x in err_msg for x in ["LIMIT: 0", "DAILY", "RPD", "DAY", "QUOTA_EXCEEDED"]):
+                            # Daily Limit (RPD)
+                            print(f"[{now_str}][{key_label}][{model_id}] DAILY QUOTA EXHAUSTED (RPD).")
+                            # Mark as maxed out
+                            async with self.stats_lock:
+                                today = self.get_today_str()
+                                if today not in self.usage_stats: self.usage_stats[today] = {}
+                                self.usage_stats[today][f"{key_label}:{model_id}"] = rpd_limit
+                            retry_delay = 1
+                        else:
+                            # RPM/TPM Limit or 503 Spike
+                            # print(f"[{now_str}][{key_label}][{model_id}] RPM/TPM/Demand spike. Sleeping 60s...")
+                            retry_delay = 60
                     else:
-                        # print(f"[{key_label}][{model_id}] Temporary quota hit (TPM/RPM). Sleeping for 1 minute...")
+                        print(f"[{now_str}][{key_label}][{model_id}] Error: {e}")
                         retry_delay = 60
                     
                     self.queue.put_nowait((row, output_path))
                     self.queue.task_done()
                     await asyncio.sleep(retry_delay)
-                
-                except Exception as e:
-                    # print(f"[{key_label}][{model_id}] Error: {e}")
-                    self.queue.put_nowait((row, output_path))
-                    self.queue.task_done()
-                    await asyncio.sleep(60)
 
             except Exception as e:
-                print(f"Worker {key_label} fatal error: {e}")
+                print(f"Worker {key_label}:{model_id} fatal error: {e}")
                 await asyncio.sleep(10)
 
     async def generate_content(self, client, model_id, row):
@@ -179,16 +235,18 @@ async def main():
         print("No tasks remaining.")
         return
 
-    # Start Workers for EVERY KEY x EVERY MODEL
+    # Start Workers (Each Key x Each Model)
     workers = []
     for k_idx in range(len(api_keys)):
         for model_id, cfg in MODELS_CONFIG.items():
-            workers.append(asyncio.create_task(generator.worker(k_idx, model_id, cfg["limit_rpm"])))
+            workers.append(asyncio.create_task(generator.worker(k_idx, model_id, cfg["limit_rpm"], cfg["limit_rpd"])))
 
     try:
         while not generator.queue.empty():
             await asyncio.sleep(300)
-            print(f"[{time.strftime('%H:%M:%S')}] Remaining tasks: {generator.queue.qsize()}")
+            status_msg = f"[{time.strftime('%H:%M:%S')}] Remaining: {generator.queue.qsize()}"
+            # Show summary
+            print(status_msg)
         await generator.queue.join()
     except KeyboardInterrupt:
         print("Stopping...")

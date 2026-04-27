@@ -1,0 +1,28 @@
+{
+  "2026-04-23": {
+    "Key2": 1400,
+    "Key1": 1400
+  },
+  "2026-04-24": {
+    "Key2": 1400,
+    "Key1": 1400
+  },
+  "2026-04-25": {
+    "Key1": 1400,
+    "Key2": 20,
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-flash-latest": 20,
+    "Key2:models/gemini-flash-latest": 20,
+    "Key2:models/gemini-flash-lite-latest": 1400,
+    "Key1:models/gemini-flash-lite-latest": 1400
+  },
+  "2026-04-26": {
+    "Key2:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-flash-lite-latest": 1400,
+    "Key2:models/gemini-flash-lite-latest": 1400,
+    "Key1:models/gemini-flash-latest": 3,
+    "Key2:models/gemini-flash-latest": 20
+  }
+}
