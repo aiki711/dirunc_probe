@@ -146,5 +146,13 @@
     "Key2:models/gemini-pro-latest": 45,
     "Key2:models/gemini-flash-latest": 20,
     "Key2:models/gemini-flash-lite-latest": 441
+  },
+  "2026-05-18": {
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-flash-lite-latest": 26,
+    "Key2:models/gemini-flash-latest": 4,
+    "Key2:models/gemini-flash-lite-latest": 34,
+    "Key1:models/gemini-flash-latest": 2
   }
 }
