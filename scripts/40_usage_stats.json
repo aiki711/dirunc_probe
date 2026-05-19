@@ -22,7 +22,129 @@
     "Key1:models/gemini-pro-latest": 45,
     "Key1:models/gemini-flash-lite-latest": 1400,
     "Key2:models/gemini-flash-lite-latest": 1400,
-    "Key1:models/gemini-flash-latest": 3,
+    "Key1:models/gemini-flash-latest": 20,
     "Key2:models/gemini-flash-latest": 20
+  },
+  "2026-04-27": {
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-flash-latest": 20,
+    "Key1:models/gemini-flash-lite-latest": 1400,
+    "Key2:models/gemini-flash-lite-latest": 1400,
+    "Key2:models/gemini-flash-latest": 20
+  },
+  "2026-04-28": {
+    "Key2:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-flash-lite-latest": 840,
+    "Key1:models/gemini-flash-lite-latest": 1400,
+    "Key1:models/gemini-flash-latest": 20,
+    "Key2:models/gemini-flash-latest": 20
+  },
+  "2026-04-29": {
+    "Key2:models/gemini-flash-lite-latest": 1400,
+    "Key2:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-flash-latest": 20,
+    "Key1:models/gemini-flash-latest": 20,
+    "Key1:models/gemini-flash-lite-latest": 1400
+  },
+  "2026-04-30": {
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-flash-latest": 20,
+    "Key1:models/gemini-flash-latest": 20,
+    "Key1:models/gemini-flash-lite-latest": 1400,
+    "Key2:models/gemini-flash-lite-latest": 1400
+  },
+  "2026-05-01": {
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-flash-latest": 20,
+    "Key1:models/gemini-flash-latest": 20,
+    "Key1:models/gemini-flash-lite-latest": 1400,
+    "Key2:models/gemini-flash-lite-latest": 1400
+  },
+  "2026-05-02": {
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-flash-lite-latest": 1400,
+    "Key2:models/gemini-flash-lite-latest": 1400,
+    "Key1:models/gemini-flash-latest": 20,
+    "Key2:models/gemini-flash-latest": 20
+  },
+  "2026-05-03": {
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-flash-latest": 20,
+    "Key1:models/gemini-flash-lite-latest": 1400,
+    "Key1:models/gemini-flash-latest": 20,
+    "Key2:models/gemini-flash-lite-latest": 1400
+  },
+  "2026-05-04": {
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-flash-lite-latest": 1400,
+    "Key2:models/gemini-flash-latest": 20,
+    "Key2:models/gemini-flash-lite-latest": 1400,
+    "Key1:models/gemini-flash-latest": 20
+  },
+  "2026-05-05": {
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-flash-lite-latest": 1400,
+    "Key1:models/gemini-flash-lite-latest": 1400,
+    "Key2:models/gemini-flash-latest": 20,
+    "Key1:models/gemini-flash-latest": 20
+  },
+  "2026-05-06": {
+    "Key2:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-flash-latest": 20,
+    "Key1:models/gemini-flash-lite-latest": 1400,
+    "Key2:models/gemini-flash-lite-latest": 1400,
+    "Key1:models/gemini-flash-latest": 20
+  },
+  "2026-05-07": {
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-flash-latest": 20,
+    "Key2:models/gemini-flash-latest": 20,
+    "Key2:models/gemini-flash-lite-latest": 1400,
+    "Key1:models/gemini-flash-lite-latest": 1400
+  },
+  "2026-05-08": {
+    "Key2:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-flash-latest": 20,
+    "Key2:models/gemini-flash-lite-latest": 1400,
+    "Key1:models/gemini-flash-lite-latest": 1400,
+    "Key2:models/gemini-flash-latest": 20
+  },
+  "2026-05-09": {
+    "Key2:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-flash-lite-latest": 11,
+    "Key1:models/gemini-flash-latest": 11,
+    "Key2:models/gemini-flash-latest": 20,
+    "Key2:models/gemini-flash-lite-latest": 1400
+  },
+  "2026-05-10": {
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-flash-latest": 20,
+    "Key2:models/gemini-flash-lite-latest": 1400
+  },
+  "2026-05-11": {
+    "Key2:models/gemini-pro-latest": 45,
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-flash-lite-latest": 1400,
+    "Key2:models/gemini-flash-latest": 20
+  },
+  "2026-05-12": {
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-flash-latest": 20,
+    "Key2:models/gemini-flash-lite-latest": 441
   }
 }

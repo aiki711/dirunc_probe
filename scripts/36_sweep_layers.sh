@@ -3,10 +3,10 @@
 # Gemma-2-2b-it Case Grammar Layer Sweep
 # Sampling layers: 0, 4, 8, 12, 16, 20, 24, 26
 
-LAYERS=(0 4 8 12 16 20 24 26)
+LAYERS=(16 20 24 26)
 MODEL="google/gemma-2-2b-it"
-TRAIN_DATA="data/processed/case_grammar/cg_v1_sgd.jsonl,data/processed/case_grammar/cg_v1_multiwoz.jsonl"
-DEV_DATA="data/processed/case_grammar/cg_dev.jsonl"
+TRAIN_DATA="data/processed/case_grammar/paired_train_gemini.jsonl"
+DEV_DATA="data/processed/case_grammar/paired_dev_gemini.jsonl"
 OUT_BASE="runs/layer_sweep_gemma2"
 
 mkdir -p $OUT_BASE
