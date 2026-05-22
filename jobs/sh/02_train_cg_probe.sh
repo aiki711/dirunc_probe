@@ -28,8 +28,8 @@ RESUME="${RESUME:-false}"
 START_EPOCH="${START_EPOCH:-1}"
 
 # --- データパス ---
-TRAIN_DATA="data/processed/case_grammar/cg_train.jsonl"
-DEV_DATA="data/processed/case_grammar/cg_dev.jsonl"
+TRAIN_DATA="${TRAIN_DATA:-data/processed/case_grammar/cg_train.jsonl}"
+DEV_DATA="${DEV_DATA:-data/processed/case_grammar/cg_dev.jsonl}"
 
 echo "========================================="
 echo "Step 2: CG Contrastive Probe Training"

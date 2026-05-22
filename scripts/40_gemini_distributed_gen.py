@@ -3,7 +3,7 @@ import json
 import os
 import time
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from google import genai
 
@@ -65,7 +65,10 @@ class DistributedGenerator:
 
     def get_today_str(self):
         # 日本時間17時にリセットされるため、17時間引いた日付を「今日」として扱う
-        return (datetime.now() - timedelta(hours=17)).strftime("%Y-%m-%d")
+        # サーバーのタイムゾーンがUTCであることを考慮し、JST基準で計算する
+        jst = timezone(timedelta(hours=9))
+        now_jst = datetime.now(jst)
+        return (now_jst - timedelta(hours=17)).strftime("%Y-%m-%d")
 
     async def increment_usage(self, key_index, model_id):
         today = self.get_today_str()
@@ -82,14 +85,15 @@ class DistributedGenerator:
         return self.usage_stats.get(today, {}).get(stat_key, 0)
 
     async def wait_until_tomorrow(self, key_label, model_id):
-        now = datetime.now()
+        jst = timezone(timedelta(hours=9))
+        now_jst = datetime.now(jst)
         # 次の日本時間17:01:00を計算
-        if now.hour < 17:
-            target = now.replace(hour=17, minute=1, second=0, microsecond=0)
+        if now_jst.hour < 17:
+            target = now_jst.replace(hour=17, minute=1, second=0, microsecond=0)
         else:
-            target = (now + timedelta(days=1)).replace(hour=17, minute=1, second=0, microsecond=0)
+            target = (now_jst + timedelta(days=1)).replace(hour=17, minute=1, second=0, microsecond=0)
         
-        wait_seconds = (target - now).total_seconds()
+        wait_seconds = (target - now_jst).total_seconds()
         print(f"[{time.strftime('%H:%M:%S')}][{key_label}][{model_id}] RPD LIMIT REACHED. Sleeping until reset (JST 17:01, {target.strftime('%Y-%m-%d %H:%M:%S')})...")
         await asyncio.sleep(wait_seconds)
 

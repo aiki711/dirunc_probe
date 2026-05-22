@@ -162,5 +162,21 @@
     "Key1:models/gemini-flash-lite-latest": 1400,
     "Key2:models/gemini-flash-latest": 20,
     "Key1:models/gemini-flash-latest": 12
+  },
+  "2026-05-20": {
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-flash-lite-latest": 1400,
+    "Key1:models/gemini-flash-latest": 20,
+    "Key2:models/gemini-flash-latest": 20,
+    "Key1:models/gemini-flash-lite-latest": 1400
+  },
+  "2026-05-21": {
+    "Key1:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-pro-latest": 45,
+    "Key2:models/gemini-flash-lite-latest": 38,
+    "Key1:models/gemini-flash-lite-latest": 37,
+    "Key1:models/gemini-flash-latest": 20,
+    "Key2:models/gemini-flash-latest": 20
   }
 }
