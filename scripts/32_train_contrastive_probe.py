@@ -432,7 +432,7 @@ def main():
         model.train()
         total_loss, n = 0.0, 0
 
-        for batch in tqdm(train_dl, desc=f"Ep {ep}"):
+        for batch in tqdm(train_dl, desc=f"Ep {ep}", disable=not sys.stdout.isatty()):
             f_ids  = batch["f_input_ids"].to(device)
             f_mask = batch["f_attention_mask"].to(device)
             m_ids  = batch["m_input_ids"].to(device)
