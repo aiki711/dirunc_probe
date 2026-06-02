@@ -1,6 +1,6 @@
 #!/bin/bash
-# jobs/sh/run_gemini_layer_sweep.sh
-# Soft / Strong Omission 両データに対するレイヤースイープ実行と集計スクリプト
+# jobs/sh/run_gemini_nq_layer_sweep.sh
+# Soft / Strong Omission 両データに対する自然言語クエリ(NQ)レイヤースイープ実行と集計スクリプト
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,12 +23,12 @@ DEV_SOFT="data/processed/case_grammar/paired_dev_gemini_soft.jsonl"
 TRAIN_STRONG="data/processed/case_grammar/paired_train_gemini_strong.jsonl"
 DEV_STRONG="data/processed/case_grammar/paired_dev_gemini_strong.jsonl"
 
-OUT_BASE="runs/layer_sweep_gemini"
-LOG_DIR="logs/layer_sweep"
+OUT_BASE="runs/layer_sweep_gemini_nq"
+LOG_DIR="logs/layer_sweep_nq"
 mkdir -p "${OUT_BASE}" "${LOG_DIR}"
 
 echo "=================================================="
-echo "Starting Layer Sweep for Gemini Soft / Strong Probe"
+echo "Starting Natural Query Layer Sweep for Gemini Soft / Strong"
 echo "Model: ${MODEL}"
 echo "Layers to sweep: ${LAYERS[*]}"
 echo "=================================================="
@@ -46,7 +46,7 @@ for L in "${LAYERS[@]}"; do
         echo "[Soft] Layer $L already trained (${EPOCHS} epochs completed). Skipping."
     else
         echo "[Soft] Training layer $L..."
-        python3 scripts/32_train_contrastive_probe.py \
+        python3 scripts/32_train_contrastive_nq_probe.py \
             --model_name "${MODEL}" \
             --layer_idx "$L" \
             --batch_size "${BATCH_SIZE}" \
@@ -64,7 +64,7 @@ for L in "${LAYERS[@]}"; do
         echo "[Strong] Layer $L already trained (${EPOCHS} epochs completed). Skipping."
     else
         echo "[Strong] Training layer $L..."
-        python3 scripts/32_train_contrastive_probe.py \
+        python3 scripts/32_train_contrastive_nq_probe.py \
             --model_name "${MODEL}" \
             --layer_idx "$L" \
             --batch_size "${BATCH_SIZE}" \
@@ -79,7 +79,7 @@ done
 
 echo ""
 echo "=================================================="
-echo "Layer Sweep Completed! Generating Summary..."
+echo "Natural Query Layer Sweep Completed! Generating Summary..."
 echo "=================================================="
 
 python3 -c "
@@ -87,7 +87,7 @@ import json
 from pathlib import Path
 
 out_base = Path('${OUT_BASE}')
-layers = [int(x) for x in "${LAYERS[*]}".split()]
+layers = [int(x) for x in \"${LAYERS[*]}\".split()]
 
 def get_best_performance(log_path):
     if not log_path.exists():
