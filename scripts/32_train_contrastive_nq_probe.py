@@ -256,8 +256,8 @@ def evaluate_cg(
             prob_m = torch.sigmoid(logits_m)
 
             ys.append(y.cpu().numpy())
-            ps_m.append(prob_m.cpu().numpy())
-            ps_f.append(prob_f.cpu().numpy())
+            ps_m.append(prob_m.float().cpu().numpy())
+            ps_f.append(prob_f.float().cpu().numpy())
 
             if enable_cg:
                 roles_list.extend(batch["case_role"])
