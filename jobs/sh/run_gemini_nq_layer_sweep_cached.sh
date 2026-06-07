@@ -1,6 +1,6 @@
 #!/bin/bash
-# jobs/sh/run_gemini_nq_layer_sweep.sh
-# Soft / Strong Omission 両データに対する自然言語クエリ(NQ)レイヤースイープ実行と集計スクリプト
+# jobs/sh/run_gemini_nq_layer_sweep_cached.sh
+# Soft / Strong Omission 両データに対する自然言語クエリ(NQ)の高速キャッシュ版レイヤースイープ実行と集計スクリプト
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,25 +11,17 @@ export PYTHONUNBUFFERED=1
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 
 # --- 設定 ---
-MODEL="google/gemma-2-2b-it"
 LAYERS=(0 4 8 12 16 20 24 26)
 EPOCHS=5
 BATCH_SIZE=16
 LR=5e-4
-
-TRAIN_SOFT="data/processed/case_grammar/paired_train_gemini_soft.jsonl"
-DEV_SOFT="data/processed/case_grammar/paired_dev_gemini_soft.jsonl"
-
-TRAIN_STRONG="data/processed/case_grammar/paired_train_gemini_strong.jsonl"
-DEV_STRONG="data/processed/case_grammar/paired_dev_gemini_strong.jsonl"
 
 OUT_BASE="runs/layer_sweep_gemini_nq_aligned"
 LOG_DIR="logs/layer_sweep_nq_aligned"
 mkdir -p "${OUT_BASE}" "${LOG_DIR}"
 
 echo "=================================================="
-echo "Starting Natural Query Layer Sweep for Gemini Soft / Strong"
-echo "Model: ${MODEL}"
+echo "Starting Accelerated Natural Query Layer Sweep (Cached)"
 echo "Layers to sweep: ${LAYERS[*]}"
 echo "=================================================="
 
@@ -43,43 +35,39 @@ for L in "${LAYERS[@]}"; do
     # --- Soft Omission ---
     SOFT_LOG="${OUT_BASE}/soft_layer_${L}/log.jsonl"
     if [ -f "${SOFT_LOG}" ] && [ "$(wc -l < "${SOFT_LOG}")" -ge "${EPOCHS}" ]; then
-        echo "[Soft] Layer $L already trained (${EPOCHS} epochs completed). Skipping."
+        echo "[Soft] Layer $L already trained. Skipping."
     else
-        echo "[Soft] Training layer $L..."
-        python3 scripts/32_train_contrastive_nq_probe.py \
-            --model_name "${MODEL}" \
+        echo "[Soft] Training cached layer $L..."
+        python3 scripts/32b_train_cached_probe.py \
+            --prefix "soft" \
             --layer_idx "$L" \
             --batch_size "${BATCH_SIZE}" \
             --epochs "${EPOCHS}" \
             --lr "${LR}" \
-            --train_data "${TRAIN_SOFT}" \
-            --dev_data "${DEV_SOFT}" \
             --out_dir "${OUT_BASE}/soft_layer_${L}" \
-            2>&1 | tee "${LOG_DIR}/soft_layer_${L}.log"
+            2>&1 | tee "${LOG_DIR}/soft_layer_${L}_cached.log"
     fi
 
     # --- Strong Omission ---
     STRONG_LOG="${OUT_BASE}/strong_layer_${L}/log.jsonl"
     if [ -f "${STRONG_LOG}" ] && [ "$(wc -l < "${STRONG_LOG}")" -ge "${EPOCHS}" ]; then
-        echo "[Strong] Layer $L already trained (${EPOCHS} epochs completed). Skipping."
+        echo "[Strong] Layer $L already trained. Skipping."
     else
-        echo "[Strong] Training layer $L..."
-        python3 scripts/32_train_contrastive_nq_probe.py \
-            --model_name "${MODEL}" \
+        echo "[Strong] Training cached layer $L..."
+        python3 scripts/32b_train_cached_probe.py \
+            --prefix "strong" \
             --layer_idx "$L" \
             --batch_size "${BATCH_SIZE}" \
             --epochs "${EPOCHS}" \
             --lr "${LR}" \
-            --train_data "${TRAIN_STRONG}" \
-            --dev_data "${DEV_STRONG}" \
             --out_dir "${OUT_BASE}/strong_layer_${L}" \
-            2>&1 | tee "${LOG_DIR}/strong_layer_${L}.log"
+            2>&1 | tee "${LOG_DIR}/strong_layer_${L}_cached.log"
     fi
 done
 
 echo ""
 echo "=================================================="
-echo "Natural Query Layer Sweep Completed! Generating Summary..."
+echo "Accelerated Layer Sweep Completed! Generating Summary..."
 echo "=================================================="
 
 python3 -c "

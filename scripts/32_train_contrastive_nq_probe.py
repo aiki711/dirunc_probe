@@ -121,7 +121,7 @@ class NaturalQueryProbe(nn.Module):
 class PairedDirUncDataset(Dataset):
     """Pairs up filled/missing rows and appends natural language queries."""
 
-    def __init__(self, rows):
+    def __init__(self, rows, tokenizer):
         pairs = {}
         for r in rows:
             pid = r["id"].rsplit("::", 1)[0]
@@ -146,6 +146,82 @@ class PairedDirUncDataset(Dataset):
                     "dataset_name":    pid.split("::")[0] if "::" in pid else "unknown"
                 })
 
+        # Pre-align all pairs in batch to be fast
+        filled_bases = [strip_query_tokens(p["filled_text"]).strip() for p in self.pairs]
+        missing_bases = [strip_query_tokens(p["missing_text"]).strip() for p in self.pairs]
+        
+        # Batch tokenize base texts to count token lengths quickly
+        enc_f = tokenizer(filled_bases, add_special_tokens=False)
+        enc_m = tokenizer(missing_bases, add_special_tokens=False)
+        
+        # We also need query token sequences for positioning
+        query_token_seqs = {}
+        for d, qstr in NATURAL_QUERY_MAP.items():
+            query_token_seqs[d] = tokenizer.encode(" " + qstr, add_special_tokens=False)
+
+        aligned_items = []
+        for i, item in enumerate(self.pairs):
+            len_f = len(enc_f["input_ids"][i])
+            len_m = len(enc_m["input_ids"][i])
+            diff = len_f - len_m
+            
+            base_f = filled_bases[i]
+            base_m = missing_bases[i]
+            
+            if diff > 0:
+                aligned_f = base_f + NATURAL_QUERY_STR
+                aligned_m = base_m + " ." * diff + NATURAL_QUERY_STR
+            elif diff < 0:
+                aligned_f = base_f + " ." * abs(diff) + NATURAL_QUERY_STR
+                aligned_m = base_m + NATURAL_QUERY_STR
+            else:
+                aligned_f = base_f + NATURAL_QUERY_STR
+                aligned_m = base_m + NATURAL_QUERY_STR
+                
+            aligned_items.append((aligned_f, aligned_m))
+
+        # Batch tokenize aligned texts to find query token positions
+        enc_f_aligned = tokenizer([a[0] for a in aligned_items], add_special_tokens=False)
+        enc_m_aligned = tokenizer([a[1] for a in aligned_items], add_special_tokens=False)
+
+        self.aligned_pairs = []
+        for i, item in enumerate(self.pairs):
+            aligned_f, aligned_m = aligned_items[i]
+            ids_f = enc_f_aligned["input_ids"][i]
+            ids_m = enc_m_aligned["input_ids"][i]
+            
+            pos_f_list = []
+            pos_m_list = []
+            
+            for d in DIRS:
+                seq = query_token_seqs[d]
+                
+                pos_f = None
+                for j in range(len(ids_f) - len(seq), -1, -1):
+                    if ids_f[j:j+len(seq)] == seq:
+                        pos_f = j + len(seq) - 1
+                        break
+                pos_f_list.append(pos_f if pos_f is not None else len(ids_f) - 1)
+
+                pos_m = None
+                for j in range(len(ids_m) - len(seq), -1, -1):
+                    if ids_m[j:j+len(seq)] == seq:
+                        pos_m = j + len(seq) - 1
+                        break
+                pos_m_list.append(pos_m if pos_m is not None else len(ids_m) - 1)
+
+            self.aligned_pairs.append({
+                "filled_text_aligned": aligned_f,
+                "missing_text_aligned": aligned_m,
+                "f_positions": pos_f_list,
+                "m_positions": pos_m_list,
+                "y_missing": item["y_missing"],
+                "case_role": item["case_role"],
+                "saturation_score": item["saturation_score"],
+                "is_saturated": item["is_saturated"],
+                "dataset_name": item["dataset_name"]
+            })
+
         stats = defaultdict(int)
         for item in self.pairs:
             stats[item["dataset_name"]] += 1
@@ -154,21 +230,18 @@ class PairedDirUncDataset(Dataset):
             print(f"    - {ds:12s}: {count:5d} pairs")
 
     def __len__(self):
-        return len(self.pairs)
+        return len(self.aligned_pairs)
 
     def __getitem__(self, idx):
-        item = self.pairs[idx]
-        
-        # Strip trailing special tokens, and append natural query string
-        filled_text = strip_query_tokens(item["filled_text"]).strip() + NATURAL_QUERY_STR
-        missing_text = strip_query_tokens(item["missing_text"]).strip() + NATURAL_QUERY_STR
-        
+        item = self.aligned_pairs[idx]
         y_vec = torch.tensor(
             [float(item["y_missing"][d]) for d in DIRS], dtype=torch.float32
         )
         return {
-            "filled_text":      filled_text,
-            "missing_text":     missing_text,
+            "filled_text":      item["filled_text_aligned"],
+            "missing_text":     item["missing_text_aligned"],
+            "f_positions":      torch.tensor(item["f_positions"], dtype=torch.long),
+            "m_positions":      torch.tensor(item["m_positions"], dtype=torch.long),
             "y":                y_vec,
             "case_role":        item["case_role"],
             "saturation_score": item["saturation_score"],
@@ -205,6 +278,8 @@ def collate_paired_batch(tokenizer, batch, max_length):
         "f_attention_mask":  enc_f["attention_mask"],
         "m_input_ids":       enc_m["input_ids"],
         "m_attention_mask":  enc_m["attention_mask"],
+        "f_positions":       torch.stack([b["f_positions"] for b in batch]),
+        "m_positions":       torch.stack([b["m_positions"] for b in batch]),
         "y":                 y,
         "case_role":        [b["case_role"]        for b in batch],
         "saturation_score": [b["saturation_score"] for b in batch],
@@ -416,8 +491,8 @@ def main():
     for p in args.dev_data.split(","):
         dev_rows.extend(read_jsonl(Path(p.strip())))
 
-    train_ds = PairedDirUncDataset(train_rows)
-    dev_ds   = PairedDirUncDataset(dev_rows)
+    train_ds = PairedDirUncDataset(train_rows, tokenizer)
+    dev_ds   = PairedDirUncDataset(dev_rows, tokenizer)
 
     if len(train_ds) == 0 or len(dev_ds) == 0:
         print("Empty dataset!")
