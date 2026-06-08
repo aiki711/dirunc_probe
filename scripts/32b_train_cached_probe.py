@@ -234,7 +234,7 @@ def _print_cg_metrics(metrics: dict) -> None:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache_dir",     type=str,   default="data/cache")
-    parser.add_argument("--prefix",        type=str,   required=True, choices=["soft", "strong"])
+    parser.add_argument("--prefix",        type=str,   required=True)
     parser.add_argument("--layer_idx",     type=int,   required=True)
     parser.add_argument("--batch_size",    type=int,   default=16)
     parser.add_argument("--epochs",        type=int,   default=5)
