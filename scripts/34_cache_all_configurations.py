@@ -184,6 +184,7 @@ def main():
     parser.add_argument("--mode", type=str, required=True, choices=["query", "final_token"])
     parser.add_argument("--align", action="store_true")
     parser.add_argument("--prefix", type=str, required=True)
+    parser.add_argument("--split", type=str, default="both", choices=["train", "dev", "both"])
     args = parser.parse_args()
 
     layers = [int(l.strip()) for l in args.layers.split(",")]
@@ -197,20 +198,23 @@ def main():
     base = ProbeModelBase(args.model_name).to(device)
     base.eval()
 
-    # Load datasets
-    train_rows = []
-    for p in args.train_data.split(","):
-        train_rows.extend(nq_probe.read_jsonl(Path(p.strip())))
-    dev_rows = []
-    for p in args.dev_data.split(","):
-        dev_rows.extend(nq_probe.read_jsonl(Path(p.strip())))
-
-    train_ds = ComparativeDataset(train_rows, tokenizer, mode=args.mode, align=args.align)
-    dev_ds = ComparativeDataset(dev_rows, tokenizer, mode=args.mode, align=args.align)
-
     collate_fn = lambda b: collate_comparative_batch(tokenizer, b, 256)
-    train_dl = DataLoader(train_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
-    dev_dl = DataLoader(dev_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
+    train_dl, dev_dl = None, None
+    train_ds, dev_ds = None, None
+
+    if args.split in ["train", "both"]:
+        train_rows = []
+        for p in args.train_data.split(","):
+            train_rows.extend(nq_probe.read_jsonl(Path(p.strip())))
+        train_ds = ComparativeDataset(train_rows, tokenizer, mode=args.mode, align=args.align)
+        train_dl = DataLoader(train_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
+
+    if args.split in ["dev", "both"]:
+        dev_rows = []
+        for p in args.dev_data.split(","):
+            dev_rows.extend(nq_probe.read_jsonl(Path(p.strip())))
+        dev_ds = ComparativeDataset(dev_rows, tokenizer, mode=args.mode, align=args.align)
+        dev_dl = DataLoader(dev_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -277,8 +281,10 @@ def main():
                 "metadata": meta_list
             }, save_path)
 
-    extract_and_save(train_dl, train_ds, "train")
-    extract_and_save(dev_dl, dev_ds, "dev")
+    if args.split in ["train", "both"]:
+        extract_and_save(train_dl, train_ds, "train")
+    if args.split in ["dev", "both"]:
+        extract_and_save(dev_dl, dev_ds, "dev")
 
 if __name__ == "__main__":
     main()

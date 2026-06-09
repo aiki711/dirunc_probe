@@ -33,50 +33,51 @@ echo "=================================================="
 echo "Phase 1: Generating cached hidden states..."
 echo "=================================================="
 
+# Helper function to cache only if needed
+cache_if_missing() {
+    local prefix="$1"
+    local split="$2"
+    local data_path="$3"
+    local mode="$4"
+    local align_flag="$5"  # either "--align" or ""
+    
+    local test_file="${CACHE_DIR}/${prefix}_layer26_${split}.pt"
+    if [ -f "${test_file}" ]; then
+        echo "Cache ${prefix} (${split}) already exists. Skipping."
+    else
+        echo "Caching ${prefix} (${split})..."
+        if [ -n "${align_flag}" ]; then
+            python3 scripts/34_cache_all_configurations.py \
+                --train_data "${data_path}" --dev_data "${data_path}" \
+                --mode "${mode}" "${align_flag}" --prefix "${prefix}" \
+                --split "${split}" --layers "0,4,8,12,16,20,24,26"
+        else
+            python3 scripts/34_cache_all_configurations.py \
+                --train_data "${data_path}" --dev_data "${data_path}" \
+                --mode "${mode}" --prefix "${prefix}" \
+                --split "${split}" --layers "0,4,8,12,16,20,24,26"
+        fi
+    fi
+}
+
 # 1. NQ (7 query tokens) Unaligned
-if [ -f "${CACHE_DIR}/nq_unaligned_strong_layer26_dev.pt" ]; then
-    echo "NQ Unaligned caches already exist. Skipping extraction."
-else
-    echo "Caching NQ Unaligned (Soft)..."
-    python3 scripts/34_cache_all_configurations.py \
-        --train_data "${TRAIN_SOFT}" --dev_data "${DEV_SOFT}" \
-        --mode query --prefix "nq_unaligned_soft" --layers "0,4,8,12,16,20,24,26"
-        
-    echo "Caching NQ Unaligned (Strong)..."
-    python3 scripts/34_cache_all_configurations.py \
-        --train_data "${TRAIN_STRONG}" --dev_data "${DEV_STRONG}" \
-        --mode query --prefix "nq_unaligned_strong" --layers "0,4,8,12,16,20,24,26"
-fi
+cache_if_missing "nq_unaligned_soft" "train" "${TRAIN_SOFT}" "query" ""
+cache_if_missing "nq_unaligned_soft" "dev" "${DEV_SOFT}" "query" ""
+cache_if_missing "nq_unaligned_strong" "train" "${TRAIN_STRONG}" "query" ""
+cache_if_missing "nq_unaligned_strong" "dev" "${DEV_STRONG}" "query" ""
 
 # 2. Final Token Aligned
-if [ -f "${CACHE_DIR}/final_token_aligned_strong_layer26_dev.pt" ]; then
-    echo "Final Token Aligned caches already exist. Skipping extraction."
-else
-    echo "Caching Final Token Aligned (Soft)..."
-    python3 scripts/34_cache_all_configurations.py \
-        --train_data "${TRAIN_SOFT}" --dev_data "${DEV_SOFT}" \
-        --mode final_token --align --prefix "final_token_aligned_soft" --layers "0,4,8,12,16,20,24,26"
-        
-    echo "Caching Final Token Aligned (Strong)..."
-    python3 scripts/34_cache_all_configurations.py \
-        --train_data "${TRAIN_STRONG}" --dev_data "${DEV_STRONG}" \
-        --mode final_token --align --prefix "final_token_aligned_strong" --layers "0,4,8,12,16,20,24,26"
-fi
+cache_if_missing "final_token_aligned_soft" "train" "${TRAIN_SOFT}" "final_token" "--align"
+cache_if_missing "final_token_aligned_soft" "dev" "${DEV_SOFT}" "final_token" "--align"
+cache_if_missing "final_token_aligned_strong" "train" "${TRAIN_STRONG}" "final_token" "--align"
+cache_if_missing "final_token_aligned_strong" "dev" "${DEV_STRONG}" "final_token" "--align"
 
 # 3. Final Token Unaligned
-if [ -f "${CACHE_DIR}/final_token_unaligned_strong_layer26_dev.pt" ]; then
-    echo "Final Token Unaligned caches already exist. Skipping extraction."
-else
-    echo "Caching Final Token Unaligned (Soft)..."
-    python3 scripts/34_cache_all_configurations.py \
-        --train_data "${TRAIN_SOFT}" --dev_data "${DEV_SOFT}" \
-        --mode final_token --prefix "final_token_unaligned_soft" --layers "0,4,8,12,16,20,24,26"
-        
-    echo "Caching Final Token Unaligned (Strong)..."
-    python3 scripts/34_cache_all_configurations.py \
-        --train_data "${TRAIN_STRONG}" --dev_data "${DEV_STRONG}" \
-        --mode final_token --prefix "final_token_unaligned_strong" --layers "0,4,8,12,16,20,24,26"
-fi
+cache_if_missing "final_token_unaligned_soft" "train" "${TRAIN_SOFT}" "final_token" ""
+cache_if_missing "final_token_unaligned_soft" "dev" "${DEV_SOFT}" "final_token" ""
+cache_if_missing "final_token_unaligned_strong" "train" "${TRAIN_STRONG}" "final_token" ""
+cache_if_missing "final_token_unaligned_strong" "dev" "${DEV_STRONG}" "final_token" ""
+
 
 echo ""
 echo "=================================================="
