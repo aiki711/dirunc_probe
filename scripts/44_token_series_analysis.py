@@ -94,6 +94,14 @@ def main():
     base_model = ProbeModelBase(args.model_name).to(device)
     base_model.eval()
 
+    # Monkey-patch PairedDirUncDataset.__getitem__ to pass 'predicate' metadata through
+    original_getitem = PairedDirUncDataset.__getitem__
+    def patched_getitem(self, idx):
+        res = original_getitem(self, idx)
+        res["predicate"] = self.aligned_pairs[idx].get("predicate", "")
+        return res
+    PairedDirUncDataset.__getitem__ = patched_getitem
+
     # Load datasets
     datasets = {}
     for prefix, path in [("soft", args.dev_soft), ("strong", args.dev_strong)]:
@@ -119,8 +127,17 @@ def main():
         print(f"==========================================")
         
         ds = datasets[omission]
-        collate_fn = lambda b: collate_paired_batch(tokenizer, b, 256)
-        dl = torch.utils.data.DataLoader(ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
+        # Dynamically restore predicate from ds.pairs to ds.aligned_pairs
+        for i, item in enumerate(ds.pairs):
+            ds.aligned_pairs[i]["predicate"] = item["predicate"]
+
+        # Use a custom collation function to add predicate into the batch dictionary
+        def custom_collate_fn(b):
+            batch_dict = collate_paired_batch(tokenizer, b, 256)
+            batch_dict["predicate"] = [x["predicate"] for x in b]
+            return batch_dict
+
+        dl = torch.utils.data.DataLoader(ds, batch_size=args.batch_size, shuffle=False, collate_fn=custom_collate_fn)
 
         for L in layers:
             print(f"\n--- Layer {L} ---")
