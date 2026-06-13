@@ -60,19 +60,25 @@ cache_if_missing() {
     fi
 }
 
-# 1. NQ (7 query tokens) Unaligned
+# 1. NQ (7 query tokens) Aligned
+cache_if_missing "nq_aligned_soft" "train" "${TRAIN_SOFT}" "query" "--align"
+cache_if_missing "nq_aligned_soft" "dev" "${DEV_SOFT}" "query" "--align"
+cache_if_missing "nq_aligned_strong" "train" "${TRAIN_STRONG}" "query" "--align"
+cache_if_missing "nq_aligned_strong" "dev" "${DEV_STRONG}" "query" "--align"
+
+# 2. NQ (7 query tokens) Unaligned
 cache_if_missing "nq_unaligned_soft" "train" "${TRAIN_SOFT}" "query" ""
 cache_if_missing "nq_unaligned_soft" "dev" "${DEV_SOFT}" "query" ""
 cache_if_missing "nq_unaligned_strong" "train" "${TRAIN_STRONG}" "query" ""
 cache_if_missing "nq_unaligned_strong" "dev" "${DEV_STRONG}" "query" ""
 
-# 2. Final Token Aligned
+# 3. Final Token Aligned
 cache_if_missing "final_token_aligned_soft" "train" "${TRAIN_SOFT}" "final_token" "--align"
 cache_if_missing "final_token_aligned_soft" "dev" "${DEV_SOFT}" "final_token" "--align"
 cache_if_missing "final_token_aligned_strong" "train" "${TRAIN_STRONG}" "final_token" "--align"
 cache_if_missing "final_token_aligned_strong" "dev" "${DEV_STRONG}" "final_token" "--align"
 
-# 3. Final Token Unaligned
+# 4. Final Token Unaligned
 cache_if_missing "final_token_unaligned_soft" "train" "${TRAIN_SOFT}" "final_token" ""
 cache_if_missing "final_token_unaligned_soft" "dev" "${DEV_SOFT}" "final_token" ""
 cache_if_missing "final_token_unaligned_strong" "train" "${TRAIN_STRONG}" "final_token" ""
@@ -128,13 +134,16 @@ run_sweep() {
     done
 }
 
-# 1. 7 Query Tokens Unaligned
+# 1. 7 Query Tokens Aligned
+run_sweep "7 Query Tokens (Aligned)" "nq_aligned" "runs/layer_sweep_gemini_nq_aligned"
+
+# 2. 7 Query Tokens Unaligned
 run_sweep "7 Query Tokens (Unaligned)" "nq_unaligned" "runs/layer_sweep_gemini_nq_unaligned"
 
-# 2. Final Token Aligned
+# 3. Final Token Aligned
 run_sweep "Final Token (Aligned)" "final_token_aligned" "runs/layer_sweep_gemini_final_token_aligned"
 
-# 3. Final Token Unaligned
+# 4. Final Token Unaligned
 run_sweep "Final Token (Unaligned)" "final_token_unaligned" "runs/layer_sweep_gemini_final_token_unaligned"
 
 echo ""

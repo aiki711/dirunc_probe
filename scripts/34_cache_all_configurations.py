@@ -69,19 +69,9 @@ class ComparativeDataset(Dataset):
             diff = len_f - len_m
             len_diffs_before.append(abs(diff))
             
-            if align:
-                if diff > 0:
-                    aligned_f = base_f
-                    aligned_m = base_m + " ." * diff
-                elif diff < 0:
-                    aligned_f = base_f + " ." * abs(diff)
-                    aligned_m = base_m
-                else:
-                    aligned_f = base_f
-                    aligned_m = base_m
-            else:
-                aligned_f = base_f
-                aligned_m = base_m
+            # Text is kept natural (no dummy periods added)
+            aligned_f = base_f
+            aligned_m = base_m
 
             if mode == "query":
                 text_f = aligned_f + NATURAL_QUERY_STR
@@ -112,16 +102,46 @@ class ComparativeDataset(Dataset):
                             pos_m = j + len(seq) - 1
                             break
                     pos_m_list.append(pos_m if pos_m is not None else len(ids_m) - 1)
+                
+                # Query alignment positions
+                min_q_pos_f = min(pos_f_list)
+                min_q_pos_m = min(pos_m_list)
+                
+                Q_f = len(ids_f) - min_q_pos_f
+                Q_m = len(ids_m) - min_q_pos_m
+                
+                C_f = min_q_pos_f
+                C_m = min_q_pos_m
+                C_max = max(C_f, C_m)
+                
+                if align:
+                    f_pos_ids = list(range(C_f)) + list(range(C_max, C_max + Q_f))
+                    m_pos_ids = list(range(C_m)) + list(range(C_max, C_max + Q_m))
+                else:
+                    f_pos_ids = list(range(len(ids_f)))
+                    m_pos_ids = list(range(len(ids_m)))
             else:
                 pos_f_list = [len(ids_f) - 1] * 7
                 pos_m_list = [len(ids_m) - 1] * 7
+                
+                if align:
+                    C_f = len(ids_f)
+                    C_m = len(ids_m)
+                    C_max = max(C_f, C_m)
+                    f_pos_ids = list(range(C_f - 1)) + [C_max - 1]
+                    m_pos_ids = list(range(C_m - 1)) + [C_max - 1]
+                else:
+                    f_pos_ids = list(range(len(ids_f)))
+                    m_pos_ids = list(range(len(ids_m)))
 
             self.processed.append({
                 "text_f": text_f,
                 "text_m": text_m,
                 "f_positions": pos_f_list,
                 "m_positions": pos_m_list,
-                "y_missing": item["y_missing"],
+                "f_position_ids": f_pos_ids,
+                "m_position_ids": m_pos_ids,
+                "y": item["y_missing"],
                 "case_role": item["case_role"],
                 "saturation_score": item["saturation_score"],
                 "is_saturated": item["is_saturated"],
@@ -136,13 +156,15 @@ class ComparativeDataset(Dataset):
     def __getitem__(self, idx):
         item = self.processed[idx]
         y_vec = torch.tensor(
-            [float(item["y_missing"][d]) for d in DIRS], dtype=torch.float32
+            [float(item["y"][d]) for d in DIRS], dtype=torch.float32
         )
         return {
             "text_f":           item["text_f"],
             "text_m":           item["text_m"],
             "f_positions":      torch.tensor(item["f_positions"], dtype=torch.long),
             "m_positions":      torch.tensor(item["m_positions"], dtype=torch.long),
+            "f_position_ids":   torch.tensor(item["f_position_ids"], dtype=torch.long),
+            "m_position_ids":   torch.tensor(item["m_position_ids"], dtype=torch.long),
             "y":                y_vec,
             "case_role":        item["case_role"],
             "saturation_score": item["saturation_score"],
@@ -159,11 +181,32 @@ def collate_comparative_batch(tokenizer, batch, max_length):
     enc = tokenizer(text_f + text_m, padding=True, truncation=True,
                     max_length=max_length, return_tensors="pt")
 
+    f_ids = enc["input_ids"][:B]
+    f_mask = enc["attention_mask"][:B]
+    m_ids = enc["input_ids"][B:]
+    m_mask = enc["attention_mask"][B:]
+
+    f_pos_ids = []
+    for bi in range(B):
+        p_ids = list(batch[bi]["f_position_ids"].numpy())
+        p_ids = p_ids + [0] * (f_ids.size(1) - len(p_ids))
+        f_pos_ids.append(p_ids)
+    f_pos_ids_tensor = torch.tensor(f_pos_ids, dtype=torch.long)
+
+    m_pos_ids = []
+    for bi in range(B):
+        p_ids = list(batch[bi]["m_position_ids"].numpy())
+        p_ids = p_ids + [0] * (m_ids.size(1) - len(p_ids))
+        m_pos_ids.append(p_ids)
+    m_pos_ids_tensor = torch.tensor(m_pos_ids, dtype=torch.long)
+
     return {
-        "f_input_ids":       enc["input_ids"][:B],
-        "f_attention_mask":  enc["attention_mask"][:B],
-        "m_input_ids":       enc["input_ids"][B:],
-        "m_attention_mask":  enc["attention_mask"][B:],
+        "f_input_ids":       f_ids,
+        "f_attention_mask":  f_mask,
+        "m_input_ids":       m_ids,
+        "m_attention_mask":  m_mask,
+        "f_position_ids":    f_pos_ids_tensor,
+        "m_position_ids":    m_pos_ids_tensor,
         "f_positions":       torch.stack([b["f_positions"] for b in batch]),
         "m_positions":       torch.stack([b["m_positions"] for b in batch]),
         "y":                 y,
@@ -231,8 +274,10 @@ def main():
         for batch in tqdm(dl, desc=split_name):
             f_ids = batch["f_input_ids"].to(device)
             f_mask = batch["f_attention_mask"].to(device)
+            f_pos_ids = batch["f_position_ids"].to(device)
             m_ids = batch["m_input_ids"].to(device)
             m_mask = batch["m_attention_mask"].to(device)
+            m_pos_ids = batch["m_position_ids"].to(device)
             y = batch["y"]
             
             ys.append(y)
@@ -252,9 +297,10 @@ def main():
 
             input_ids = torch.cat([f_ids, m_ids], dim=0)
             attention_mask = torch.cat([f_mask, m_mask], dim=0)
+            position_ids = torch.cat([f_pos_ids, m_pos_ids], dim=0)
 
             with torch.no_grad():
-                out = base.lm(input_ids=input_ids, attention_mask=attention_mask)
+                out = base.lm(input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids)
 
                 for L in layers:
                     hs = base.get_layer_hidden(out.hidden_states, L)
