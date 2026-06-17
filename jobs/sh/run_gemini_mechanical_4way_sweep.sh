@@ -45,12 +45,14 @@ cache_if_missing() {
             python3 scripts/34_cache_all_configurations.py \
                 --train_data "${TRAIN_MECH}" --dev_data "${DEV_MECH}" \
                 --mode "${mode}" "${align_flag}" --prefix "${prefix}" \
-                --split "${split}" --layers "0,4,8,12,16,20,24,26"
+                --split "${split}" --layers "0,4,8,12,16,20,24,26" \
+                --batch_size 8
         else
             python3 scripts/34_cache_all_configurations.py \
                 --train_data "${TRAIN_MECH}" --dev_data "${DEV_MECH}" \
                 --mode "${mode}" --prefix "${prefix}" \
-                --split "${split}" --layers "0,4,8,12,16,20,24,26"
+                --split "${split}" --layers "0,4,8,12,16,20,24,26" \
+                --batch_size 8
         fi
     fi
 }
