@@ -15,11 +15,11 @@ def main():
     methods = ['One-step Prompting\n(Baseline 1)', 'Identify-then-Verify\n(Prior Work / Baseline 2)', 'Probing\n(Ours / Multi-label)']
     
     # 1. Verify Phase Data
-    verify_acc = [53.67, 74.33, 79.33]
-    verify_f1 = [66.67, 84.44, 86.22]
+    verify_acc = [69.00, 68.67, 79.33]
+    verify_f1 = [80.25, 80.00, 86.22]
     
     # 2. Identify Phase Data
-    identify_f1 = [0.0, 26.98, 64.83]  # One-step has no slot identification capability
+    identify_f1 = [14.49, 13.83, 64.83]
     
     # Premium Color Palette
     # Soft Red/Grey for One-step, Warm Amber for Prior Work, Deep Emerald/Teal for Probing
