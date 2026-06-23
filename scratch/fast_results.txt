@@ -1,0 +1,39 @@
+Loading cached tensors for layer 16 from 'final_token_aligned_soft'...
+Loading original natural_dev.jsonl text rows...
+Building dev paired dataset...
+  Total pairs loaded: 3620
+    - multiwoz    :  3176 pairs
+    - sgd         :   444 pairs
+Warning: Paired dataset size (3620) does not match cache size (3619). Aligning dev_pairs...
+Sampled 300 items for evaluation.
+Using 3320 dev items for threshold calibration.
+Subsampled training data: 1500 pairs (out of 14580) for baseline & fusion training.
+
+[A] Training Baseline...
+
+[B] Training Stacking (L2)...
+
+[C] Training Feature Concatenation (L2)...
+
+======================================================================
+ CROSS-SLOT FEATURE FUSION EVALUATION RESULTS (V3 - L2 - FAST) 
+======================================================================
+Metric                    | Baseline     | Stacking (Prob) | Hidden Fusion  
+----------------------------------------------------------------------
+Omission Macro F1         |  52.76%     |  47.51%        |  47.55%
+Omission Micro F1         |  64.94%     |  64.04%        |  62.81%
+Strict Subset Acc         |  58.33%     |  58.33%        |  58.00%
+Hamming Loss (lower)      |   0.0771     |   0.0781        |   0.0795
+Dialogue-level Acc        |  74.67%     |  75.00%        |  75.00%
+======================================================================
+
+Detailed Per-Slot F1 Score Comparison:
+Slot         | Baseline   | Stacking   | Hidden Fusion  
+-------------------------------------------------------
+who          |  50.00%   |  44.44%   |  50.00%
+what         |  62.86%   |  60.78%   |  59.57%
+when         |  80.41%   |  80.41%   |  78.72%
+where        |  57.14%   |  57.60%   |  55.12%
+why          |   0.00%   |   0.00%   |   0.00%
+how          |  64.35%   |  64.35%   |  64.41%
+which        |  54.55%   |  25.00%   |  25.00%

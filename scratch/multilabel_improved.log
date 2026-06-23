@@ -1,0 +1,22 @@
+Loading cached tensors for layer 16 from 'final_token_aligned_soft'...
+Traceback (most recent call last):
+  File "/home/admin/work/s2550009/dirunc_probe/scripts/55_compare_multilabel_probing.py", line 498, in <module>
+    main()
+  File "/home/admin/work/s2550009/dirunc_probe/scripts/55_compare_multilabel_probing.py", line 257, in main
+    train_cache = torch.load(Path(args.cache_dir) / f"{args.prefix}_layer{args.layer}_train.pt", map_location="cpu")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/admin/work/s2550009/dirunc_probe/dirunc_probe/lib/python3.11/site-packages/torch/serialization.py", line 1521, in load
+    return _load(
+           ^^^^^^
+  File "/home/admin/work/s2550009/dirunc_probe/dirunc_probe/lib/python3.11/site-packages/torch/serialization.py", line 2122, in _load
+    result = unpickler.load()
+             ^^^^^^^^^^^^^^^^
+  File "/home/admin/work/s2550009/dirunc_probe/dirunc_probe/lib/python3.11/site-packages/torch/_weights_only_unpickler.py", line 535, in load
+    self.append(self.persistent_load(pid))
+                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/admin/work/s2550009/dirunc_probe/dirunc_probe/lib/python3.11/site-packages/torch/serialization.py", line 2086, in persistent_load
+    typed_storage = load_tensor(
+                    ^^^^^^^^^^^^
+  File "/home/admin/work/s2550009/dirunc_probe/dirunc_probe/lib/python3.11/site-packages/torch/serialization.py", line 2039, in load_tensor
+    zip_file.get_storage_from_record(name, numel, torch.UntypedStorage)
+KeyboardInterrupt
