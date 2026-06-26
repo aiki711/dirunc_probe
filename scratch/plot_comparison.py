@@ -14,12 +14,12 @@ def main():
     # Data definition
     methods = ['One-step Prompting\n(Baseline 1)', 'Identify-then-Verify\n(Prior Work / Baseline 2)', 'Probing\n(Ours / Multi-label)']
     
-    # 1. Verify Phase Data
-    verify_acc = [69.00, 68.67, 79.33]
-    verify_f1 = [80.25, 80.00, 86.22]
+    # 1. Uncertainty Detection Data (Latest Layer 26 Probing & Prompting Results)
+    verify_acc = [53.67, 73.00, 80.33]
+    verify_f1 = [66.67, 83.44, 86.86]
     
-    # 2. Identify Phase Data
-    identify_f1 = [14.49, 13.83, 64.83]
+    # 2. Case Role Identification Data (Latest Layer 26 Probing & Prompting Results)
+    identify_f1 = [15.79, 15.18, 65.71]
     
     # Premium Color Palette
     # Soft Red/Grey for One-step, Warm Amber for Prior Work, Deep Emerald/Teal for Probing
@@ -28,7 +28,7 @@ def main():
     # Setup Figure with 2 subplots side-by-side
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 6), dpi=150)
     
-    # ------------------ Subplot 1: Verify Phase ------------------
+    # ------------------ Subplot 1: Uncertainty Detection ------------------
     x = np.arange(len(methods))
     width = 0.35
     
@@ -37,7 +37,7 @@ def main():
     rects_f1 = ax1.bar(x + width/2, verify_f1, width, label='Omission F1-score', color='#0288D1', edgecolor='none', alpha=0.85)
     
     ax1.set_ylabel('Score (%)', fontsize=11, fontweight='semibold')
-    ax1.set_title('Verify Phase: Context Completeness Detection\n(Sufficient vs. Insufficient)', fontsize=12, fontweight='bold', pad=15)
+    ax1.set_title('Uncertainty Detection Results\n(Context Completeness / Verify)', fontsize=12, fontweight='bold', pad=15)
     ax1.set_xticks(x)
     ax1.set_xticklabels(methods, fontsize=10, fontweight='semibold')
     ax1.set_ylim(0, 105)
@@ -63,12 +63,12 @@ def main():
     autolabel_verify(rects_acc, ax1)
     autolabel_verify(rects_f1, ax1)
     
-    # ------------------ Subplot 2: Identify Phase ------------------
+    # ------------------ Subplot 2: Case Role Identification ------------------
     # Draw single bars (Macro F1-score) with specific colors per method
     rects_id = ax2.bar(methods, identify_f1, width=0.5, color=colors, edgecolor='none', alpha=0.85)
     
     ax2.set_ylabel('Macro F1-score (%)', fontsize=11, fontweight='semibold')
-    ax2.set_title('Identify Phase: Omitted Semantic Slot Identification\n(Multi-class / Multi-label Specificity)', fontsize=12, fontweight='bold', pad=15)
+    ax2.set_title('Case Role Identification Results\n(Omitted Slot Macro F1)', fontsize=12, fontweight='bold', pad=15)
     ax2.set_xticks(np.arange(len(methods)))
     ax2.set_xticklabels(methods, fontsize=10, fontweight='semibold')
     ax2.set_ylim(0, 105)
