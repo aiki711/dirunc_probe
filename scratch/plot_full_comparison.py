@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 """
-Final comprehensive comparison figure with all baselines.
+Final comprehensive comparison figure with balanced baselines.
 
 Reads results from:
-  - runs/identify_verify_comparison/comparison_report_v2.json   (Probing)
-  - runs/identify_verify_comparison/multilabel_prompting_results.json (Prompting)
-  - runs/identify_verify_comparison/bert_results.json           (BERT fine-tune)
-  - runs/identify_verify_comparison/tfidf_results.json          (TF-IDF)
-  - runs/identify_verify_comparison/logit_results.json          (Logit)
-  - runs/identify_verify_comparison/slotwise_logit_results.json (Slot-wise Logit)
-  - runs/identify_verify_comparison/slot_metrics_test.json      (Per-slot probing)
+  - runs/identify_verify_comparison/binary_balanced_comparison_results.json (Balanced metrics)
+  - runs/identify_verify_comparison/slot_metrics_test.json                  (Per-slot probing)
 
 Generates:
   - runs/identify_verify_comparison/comprehensive_comparison_v3.png
@@ -31,50 +26,51 @@ def load_json(path):
 
 def main():
     # ── Load results ─────────────────────────────────────────────────────
-    probe          = load_json(OUT_DIR / "comparison_report_v2.json")
-    prompting      = load_json(OUT_DIR / "multilabel_prompting_results.json")
-    bert           = load_json(OUT_DIR / "bert_results.json")
-    tfidf          = load_json(OUT_DIR / "tfidf_results.json")
-    logit          = load_json(OUT_DIR / "logit_results.json")
+    balanced_data = load_json(OUT_DIR / "binary_balanced_comparison_results.json")
     slotwise_logit = load_json(OUT_DIR / "slotwise_logit_results.json")
     slot_data      = load_json(OUT_DIR / "slot_metrics_test.json")
 
+    metrics = balanced_data["metrics"]
+
     # Extract overall metrics
-    p_acc  = probe["probing"]["sufficiency_accuracy"]   * 100
-    p_f1   = probe["probing"]["sufficiency_f1_omission"] * 100
-    iv_acc = prompting["twostep"]["verify_accuracy"]      * 100
-    iv_f1  = prompting["twostep"]["verify_f1_omission"]   * 100
-    bt_acc = bert["verify_accuracy"]    * 100
-    bt_f1  = bert["verify_f1_omission"] * 100
-    tf_acc = tfidf["verify_accuracy"]    * 100
-    tf_f1  = tfidf["verify_f1_omission"] * 100
+    bt_acc = metrics["BERT fine-tune"]["accuracy"] * 100
+    bt_f1  = metrics["BERT fine-tune"]["f1"] * 100
 
-    lg_acc = logit["verify_accuracy"]    * 100
-    lg_f1  = logit["verify_f1_omission"] * 100
+    sw_acc = metrics["Slot-wise Logit"]["accuracy"] * 100
+    sw_f1  = metrics["Slot-wise Logit"]["f1"] * 100
 
-    sw_acc = slotwise_logit["verify_accuracy"]    * 100
-    sw_f1  = slotwise_logit["verify_f1_omission"] * 100
+    lg_acc = metrics["Logit P(Yes)"]["accuracy"] * 100
+    lg_f1  = metrics["Logit P(Yes)"]["f1"] * 100
+
+    # For Probing, we use the Multinomial classifier on balanced split
+    p_acc  = metrics["Probing (Ours - Multinomial)"]["accuracy"] * 100
+    p_f1   = metrics["Probing (Ours - Multinomial)"]["f1"] * 100
+
+    os_acc = metrics["One-step Prompting"]["accuracy"] * 100
+    os_f1  = metrics["One-step Prompting"]["f1"] * 100
+
+    tf_acc = metrics["TF-IDF + LR"]["accuracy"] * 100
+    tf_f1  = metrics["TF-IDF + LR"]["f1"] * 100
 
     # ── Palette ───────────────────────────────────────────────────────────
     c_probe   = '#00897B'   # Teal   — our method
     c_bert    = '#1565C0'   # Blue   — BERT fine-tune
     c_tfidf   = '#6A1B9A'   # Purple — TF-IDF
-    c_iv      = '#E53935'   # Red    — Identify-then-Verify
+    c_os      = '#FB8C00'   # Amber  — One-step Prompting
     c_logit   = '#00838F'   # Cyan   — Logit P(Yes)
     c_sw      = '#FF8A65'   # Deep Orange — Slot-wise Logit
 
     # ── Data for left panel (Uncertainty Detection) ───────────────────────
     methods = [
         'BERT\nfine-tune', 
-        'Slot-wise\nLogit', 
-        'Logit\nP(Yes)', 
         'Probing\n(Ours)', 
-        'Identify-\nthen-Verify',
         'TF-IDF\n+LR', 
+        'Logit\nP(Yes)', 
+        'Slot-wise\nLogit', 
     ]
-    accs   = [bt_acc, sw_acc, lg_acc, p_acc, iv_acc, tf_acc]
-    f1s    = [bt_f1,  sw_f1,  lg_f1,  p_f1,  iv_f1,  tf_f1]
-    colors = [c_bert, c_sw, c_logit, c_probe, c_iv, c_tfidf]
+    accs   = [bt_acc, p_acc, tf_acc, lg_acc, sw_acc]
+    f1s    = [bt_f1,  p_f1,  tf_f1,  lg_f1,  sw_f1]
+    colors = [c_bert, c_probe, c_tfidf, c_logit, c_sw]
 
     # Sort by F1 descending for visual clarity
     order = np.argsort(f1s)[::-1]
@@ -113,7 +109,7 @@ def main():
         ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
                  f'{v:.1f}%', ha='center', va='bottom', fontsize=8, fontweight='bold')
 
-    ax1.set_title('Task 1: Context Uncertainty Detection\n(Sufficient vs. Insufficient)',
+    ax1.set_title('Task 1: Context Uncertainty Detection\n(Binary Balanced Test Split)',
                   fontsize=12, fontweight='bold')
     ax1.set_ylabel('Score (%)', fontsize=10)
     ax1.set_xticks(x1)
@@ -186,7 +182,7 @@ def main():
     plt.close()
 
     # ── Print comparison table ─────────────────────────────────────────────
-    print("\n====== Final Comparison Table (Test Split) ======")
+    print("\n====== Final Comparison Table (Balanced Test Split) ======")
     print(f"{'Method':<28} {'Acc':>8} {'F1':>8}")
     print("-" * 47)
     for m, a, f in zip(methods, accs, f1s):
