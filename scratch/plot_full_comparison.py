@@ -90,7 +90,7 @@ def main():
     plt.rcParams['font.family'] = 'sans-serif'
     plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7.0), dpi=150)
-    fig.suptitle("Uncertainty & Semantic Completeness Detection (Gemma-2-2b-it, Layer 26)",
+    fig.suptitle("Uncertainty & Semantic Completeness Detection (Gemma-2-2b-it, Layer 16)",
                  fontsize=14, fontweight='bold', y=1.02)
 
     # ── Left: Uncertainty Detection (F1 bars + Accuracy dots) ─────────────

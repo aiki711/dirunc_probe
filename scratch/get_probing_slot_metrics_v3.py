@@ -68,7 +68,7 @@ def build_caserole_y(pairs):
 def main():
     CACHE_DIR = Path("data/cache")
     PREFIX    = "final_token_aligned_soft"
-    LAYER     = 26
+    LAYER     = 16
     N_CAL     = 50    # calibration samples per slot (positive & negative)
     N_EVAL    = 50    # evaluation samples per slot
 
