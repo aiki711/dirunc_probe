@@ -42,8 +42,8 @@ def load_s32():
     return mod
 
 def main():
-    # Load caches for Layer 26 (our standard evaluation layer)
-    layer = 26
+    # Load caches for Layer 16 (our optimal evaluation layer)
+    layer = 16
     print(f"Loading cached hidden states for Layer {layer}...")
     train_cache = torch.load(CACHE_DIR / f"final_token_aligned_soft_layer{layer}_train.pt", map_location="cpu")
     dev_cache   = torch.load(CACHE_DIR / f"final_token_aligned_soft_layer{layer}_dev.pt", map_location="cpu")
@@ -109,6 +109,23 @@ def main():
     X_dev_pca = pca.transform(X_dev)
     X_dev_lda = lda.transform(X_dev_pca)
 
+    # Calculate class separation metrics
+    from sklearn.metrics import silhouette_score
+    y_dev_binary = np.array(["Omission" if y != "None" else "None" for y in y_dev])
+    sil_6class_lda = silhouette_score(X_dev_lda, y_dev)
+    sil_binary_lda = silhouette_score(X_dev_lda, y_dev_binary)
+    sil_6class_pca = silhouette_score(X_dev_pca, y_dev)
+    sil_binary_pca = silhouette_score(X_dev_pca, y_dev_binary)
+    
+    print("\n====== Class Separation Metrics (Silhouette Score) ======")
+    print(f"  Visual 2D LDA Space:")
+    print(f"    Sufficient (None) vs. Insufficient (Omission) : {sil_binary_lda:.4f}")
+    print(f"    6-Class separation (None + 5 slots)           : {sil_6class_lda:.4f}")
+    print(f"  Intrinsic 256D PCA Space:")
+    print(f"    Sufficient (None) vs. Insufficient (Omission) : {sil_binary_pca:.4f}")
+    print(f"    6-Class separation (None + 5 slots)           : {sil_6class_pca:.4f}")
+    print("=========================================================\n")
+
     # ── 3. Plotting ────────────────────────────────────────────────────────
     plt.rcParams['font.family'] = 'sans-serif'
     plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
@@ -142,7 +159,7 @@ def main():
 
     plt.xlabel("LDA Dimension 1", fontsize=11, fontweight='bold')
     plt.ylabel("LDA Dimension 2", fontsize=11, fontweight='bold')
-    plt.title("2D LDA Projection of Gemma-2-2b-it Hidden States (Layer 26)\nSemantic Case Role Omission Space", 
+    plt.title("2D LDA Projection of Gemma-2-2b-it Hidden States (Layer 16)\nSemantic Case Role Omission Space", 
               fontsize=13, fontweight='bold', pad=15)
     
     plt.grid(True, linestyle="--", alpha=0.3)

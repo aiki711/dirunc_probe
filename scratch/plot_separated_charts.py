@@ -103,73 +103,98 @@ def main():
     plt.savefig(fig1_path, bbox_inches='tight')
     print(f"Saved separated chart to {fig1_path}")
 
-    # ── Figure 2: Case Role Completeness Detection (Per-slot F1) ──────────
+    # ── Figure 2: Case Role Completeness Detection (3-Panel: Precision, Recall, F1) ──
     slot_names = slot_data["slots"]  # ['who', 'when', 'how', 'what', 'where']
-    probing_f1 = slot_data["f1"]
+    probing_p = [slot_data["precision"][slot_data["slots"].index(s)] for s in slot_names]
+    probing_r = [slot_data["recall"][slot_data["slots"].index(s)] for s in slot_names]
+    probing_f1 = [slot_data["f1"][slot_data["slots"].index(s)] for s in slot_names]
     
-    # map slot names to values in slotwise_logit
+    logit_p = [slotwise_logit["slot_precision"][s] * 100 for s in slot_names]
+    logit_r = [slotwise_logit["slot_recall"][s] * 100 for s in slot_names]
     logit_f1 = [slotwise_logit["slot_f1"][s] * 100 for s in slot_names]
 
-    fig2, ax2 = plt.subplots(figsize=(10, 6.0), dpi=150)
+    fig2, (ax_p, ax_r, ax_f1) = plt.subplots(1, 3, figsize=(18, 6.0), dpi=150)
     
     x2 = np.arange(len(slot_names))
     width2 = 0.35
-    
     c_ours = '#00897B'  # Teal
     c_sw   = '#FF8A65'  # Coral/Orange
-    
-    # Use formatted labels for slots
     formatted_slots = [f"{s}†" if s == 'who' else s for s in slot_names]
+
+    # Subplot 1: Precision
+    b_ours_p = ax_p.bar(x2 - width2/2, probing_p, width2, label='Probing (Ours - Layer 16)', color=c_ours, alpha=0.9, edgecolor=c_ours, linewidth=1)
+    b_sw_p   = ax_p.bar(x2 + width2/2, logit_p,   width2, label='Slot-wise Logit Prompting (5-shot)', color=c_sw, alpha=0.9, edgecolor=c_sw, linewidth=1)
+    ax_p.set_title("Precision", fontsize=12, fontweight='bold')
+    ax_p.set_ylabel("Score (%)", fontsize=11)
+    ax_p.set_xticks(x2)
+    ax_p.set_xticklabels(formatted_slots, fontsize=10, fontweight='bold')
+    ax_p.set_ylim(0, 110)
+    ax_p.grid(axis='y', linestyle='--', alpha=0.3)
+    ax_p.spines['top'].set_visible(False)
+    ax_p.spines['right'].set_visible(False)
+    ax_p.axhline(y=50, color='gray', linestyle='--', alpha=0.7)
+
+    # Subplot 2: Recall
+    b_ours_r = ax_r.bar(x2 - width2/2, probing_r, width2, label='Probing (Ours - Layer 16)', color=c_ours, alpha=0.9, edgecolor=c_ours, linewidth=1)
+    b_sw_r   = ax_r.bar(x2 + width2/2, logit_r,   width2, label='Slot-wise Logit Prompting (5-shot)', color=c_sw, alpha=0.9, edgecolor=c_sw, linewidth=1)
+    ax_r.set_title("Recall", fontsize=12, fontweight='bold')
+    ax_r.set_xticks(x2)
+    ax_r.set_xticklabels(formatted_slots, fontsize=10, fontweight='bold')
+    ax_r.set_ylim(0, 110)
+    ax_r.grid(axis='y', linestyle='--', alpha=0.3)
+    ax_r.spines['top'].set_visible(False)
+    ax_r.spines['right'].set_visible(False)
+    ax_r.axhline(y=50, color='gray', linestyle='--', alpha=0.7)
+
+    # Subplot 3: F1-Score
+    b_ours_f1 = ax_f1.bar(x2 - width2/2, probing_f1, width2, label='Probing (Ours - Layer 16)', color=c_ours, alpha=0.9, edgecolor=c_ours, linewidth=1)
+    b_sw_f1   = ax_f1.bar(x2 + width2/2, logit_f1,   width2, label='Slot-wise Logit Prompting (5-shot)', color=c_sw, alpha=0.9, edgecolor=c_sw, linewidth=1)
+    ax_f1.set_title("F1-Score", fontsize=12, fontweight='bold')
+    ax_f1.set_xticks(x2)
+    ax_f1.set_xticklabels(formatted_slots, fontsize=10, fontweight='bold')
+    ax_f1.set_ylim(0, 110)
+    ax_f1.grid(axis='y', linestyle='--', alpha=0.3)
+    ax_f1.spines['top'].set_visible(False)
+    ax_f1.spines['right'].set_visible(False)
+    ax_f1.axhline(y=50, color='gray', linestyle='--', alpha=0.7)
     
-    b_ours = ax2.bar(x2 - width2/2, probing_f1, width2, label='Probing (Ours - Layer 16)', 
-                      color=c_ours, alpha=0.9, edgecolor=c_ours, linewidth=1)
-    b_sw   = ax2.bar(x2 + width2/2, logit_f1,   width2, label='Slot-wise Logit Prompting (5-shot)', 
-                      color=c_sw,   alpha=0.9, edgecolor=c_sw,   linewidth=1)
-
-    # Labels and titles
-    ax2.set_title("Task 2: Case Role Completeness Detection (Per-slot Binary F1-Score)\nHeld-out Test Split (Unbiased Evaluation)", 
-                  fontsize=12, fontweight='bold', pad=15)
-    ax2.set_ylabel("F1-Score (%)", fontsize=11, labelpad=8)
-    ax2.set_xticks(x2)
-    ax2.set_xticklabels(formatted_slots, fontsize=10, fontweight='bold')
-    ax2.set_ylim(0, 110)
-    ax2.grid(axis='y', linestyle='--', alpha=0.3)
-    ax2.spines['top'].set_visible(False)
-    ax2.spines['right'].set_visible(False)
-
-    # Chance level line at 50%
-    ax2.axhline(y=50, color='gray', linestyle='--', alpha=0.7)
-
-    # Legend
-    ax2.legend(loc='upper right', frameon=True, facecolor='white', edgecolor='#E0E0E0', fontsize=10)
+    # Global title and legend
+    fig2.suptitle("Task 2: Case Role Completeness Detection (Per-slot Precision, Recall, and F1)\nHeld-out Test Split (Unbiased Evaluation)", 
+                  fontsize=14, fontweight='bold', y=0.98)
+    ax_f1.legend(loc='upper right', frameon=True, facecolor='white', edgecolor='#E0E0E0', fontsize=10)
 
     # Annotate values
-    def autolabel_slot(rects, is_unreliable=False):
+    def autolabel_slot(ax, rects, is_unreliable=False):
         for rect in rects:
             height = rect.get_height()
             label = f'{height:.1f}%'
-            # special marker for who slot
             x_pos = rect.get_x() + rect.get_width() / 2
-            if is_unreliable and rect.get_x() < 0.2: # 'who' is the first slot (index 0)
-                ax2.annotate(label, xy=(x_pos, height), xytext=(0, 3),
+            if is_unreliable and rect.get_x() < 0.2: # 'who' slot
+                ax.annotate(label, xy=(x_pos, height), xytext=(0, 3),
                              textcoords="offset points", ha='center', va='bottom',
-                             fontsize=9, fontweight='semibold')
-                ax2.annotate('†', xy=(x_pos, height + 8), xytext=(0, 0),
+                             fontsize=8.5, fontweight='semibold')
+                ax.annotate('†', xy=(x_pos, height + 8), xytext=(0, 0),
                              textcoords="offset points", ha='center', va='bottom',
-                             fontsize=12, color='gray')
+                             fontsize=11, color='gray')
             else:
-                ax2.annotate(label, xy=(x_pos, height), xytext=(0, 3),
+                ax.annotate(label, xy=(x_pos, height), xytext=(0, 3),
                              textcoords="offset points", ha='center', va='bottom',
-                             fontsize=9, fontweight='semibold')
+                             fontsize=8.5, fontweight='semibold')
 
-    autolabel_slot(b_ours, is_unreliable=True)
-    autolabel_slot(b_sw)
+    autolabel_slot(ax_p, b_ours_p, is_unreliable=True)
+    autolabel_slot(ax_p, b_sw_p)
+    autolabel_slot(ax_r, b_ours_r, is_unreliable=True)
+    autolabel_slot(ax_r, b_sw_r)
+    autolabel_slot(ax_f1, b_ours_f1, is_unreliable=True)
+    autolabel_slot(ax_f1, b_sw_f1)
 
-    # Add footnote for who slot
-    ax2.text(-0.4, 3, "† who (Agent): 1.9% of data — unreliable\nEval: held-out test split (50% of dev, stratified)", 
-             fontsize=8.5, color='gray', va='bottom')
+    # Footnote on the first subplot (left aligned)
+    ax_p.text(0.02, 0.03, "† who (Agent): 1.9% of data — unreliable\nEval: held-out test split (50% of dev, stratified)", 
+              fontsize=8.0, color='gray', va='bottom', transform=ax_p.transAxes)
 
     plt.tight_layout()
+    # Adjust layout to leave space for suptitle
+    plt.subplots_adjust(top=0.85)
     fig2_path = OUT_DIR / "case_role_completeness_detection.png"
     plt.savefig(fig2_path, bbox_inches='tight')
     print(f"Saved separated slot chart to {fig2_path}")
